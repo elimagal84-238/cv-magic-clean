@@ -1,8 +1,13 @@
+import dynamic from "next/dynamic";
+const MatcherForm = dynamic(() => import("../components/MatcherForm"), { ssr: false });
+
 export default function Home() {
   return (
-    <div style={{ textAlign: "center", marginTop: "50px" }}>
-      <h1>ברוך הבא ל-CV Magic 🚀</h1>
-      <p>זהו הדף הראשון שלך ב-Next.js</p>
+    <div style={{ marginTop: 30, textAlign: "center" }}>
+      <h1>CV Magic 🚀</h1>
+      <p>גרסת MVP – טופס בדיקת התאמה בסיסית</p>
+      <MatcherForm />
     </div>
   );
 }
+
