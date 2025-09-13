@@ -1,13 +1,13 @@
-import dynamic from "next/dynamic";
-const MatcherForm = dynamic(() => import("../components/MatcherForm"), { ssr: false });
+import Button from "../components/Button";
 
 export default function Home() {
   return (
-    <div style={{ marginTop: 30, textAlign: "center" }}>
-      <h1>CV Magic 🚀</h1>
-      <p>גרסת MVP – טופס בדיקת התאמה בסיסית</p>
-      <MatcherForm />
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
+      <h1 className="text-3xl font-bold mb-6">CV Magic 🚀</h1>
+      <p className="mb-4">זהו הדף הראשון שלך עם Next.js ו-Tailwind</p>
+      <Button>לחץ כאן</Button>
     </div>
   );
 }
+
 
