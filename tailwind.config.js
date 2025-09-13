@@ -5,6 +5,12 @@ module.exports = {
     "./components/**/*.{js,ts,jsx,tsx}",
     "./app/**/*.{js,ts,jsx,tsx}"
   ],
-  theme: { extend: {} },
-  plugins: [require("tailwindcss-animate")],
+  theme: {
+    extend: {
+      container: { center: true, padding: "1rem" },
+      boxShadow: { card: "0 10px 30px rgba(2,6,23,.06)" },
+      borderRadius: { xl: "1rem" }
+    }
+  },
+  plugins: [require("tailwindcss-animate")]
 };
