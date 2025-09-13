@@ -2,6 +2,8 @@
   "name": "cv-magic-clean",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "npm@10.8.1",
+"engines": { "npm": ">=10.0.0" }
   "scripts": {
     "dev": "next dev",
     "build": "next build",
