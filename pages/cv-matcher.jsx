@@ -120,7 +120,7 @@ export default function CVMatcher() {
       {/* Main headings: EN title + HE subtitle */}
       <header className="text-center space-y-1">
         <h1 className="text-3xl font-bold">CV-Magic</h1>
-        <p className="text-sm text-gray-600">קורות חיים מותאמים בשנייה - שליחת קורות חיים מותאמים עושה את החיים של כולנו קלים</p>
+        <p className="text-sm text-gray-600">קורות חיים מותאמים בשנייה - שליחת קורות חיים מותאמים</p>
       </header>
 
       {/* Inputs */}
