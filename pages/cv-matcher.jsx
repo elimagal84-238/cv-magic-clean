@@ -115,7 +115,7 @@ export default function CVMatcher() {
   }
 
   return (
-    <div dir="rtl" className="mx-auto max-w-6xl px-4 py-6 space-y-6 text-right">
+    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6 text-right">
       {/* Header */}
       <div className="text-center space-y-1">
         <h1 className="text-3xl font-bold">CV-Magic</h1>
