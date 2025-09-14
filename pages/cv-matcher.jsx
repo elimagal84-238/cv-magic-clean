@@ -22,13 +22,29 @@ export default function CVMatcherPage() {
   const [processingState, setProcessingState] = useState({
     jobFile: false, jobUrl: false, cvFile: false, cvUrl: false,
   });
+  
+  // יצירת תוכן (סטאב) — ממיר כל תוצאה למחרוזת לתצוגה
+const generateContent = async (type, level = 5) => {
+  if (!jobPosting.trim() || !cvText.trim()) return;
+  setIsGenerating(prev => ({ ...prev, [type]: true }));
+  try {
+    const result = await InvokeLLM({ prompt: `generate ${type} with level ${level}` });
 
-  // ניתוח התאמה (עם סטאב)
-  const analyzeMatch = useCallback(async (job, cv) => {
-    if (!job.trim() || !cv.trim()) {
-      setMatchScore(null); setMatchAnalysis(null);
-      return;
-    }
+    // אם חזר טקסט – מציגים אותו; אחרת נסה לקחת summary; ואם אין — מדפיס JSON יפה
+    const text =
+      (typeof result === "string" && result) ||
+      result?.text ||
+      result?.summary ||
+      JSON.stringify(result, null, 2);
+
+    setGeneratedContent(prev => ({ ...prev, [type]: text }));
+  } catch (e) {
+    console.error(e);
+  } finally {
+    setIsGenerating(prev => ({ ...prev, [type]: false }));
+  }
+};
+
     setIsAnalyzing(true);
     try {
       const result = await InvokeLLM({
