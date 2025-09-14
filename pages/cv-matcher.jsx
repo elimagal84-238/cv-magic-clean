@@ -278,8 +278,6 @@ async function fakeDouble(adjustedCV, jobText, model) {
   return {
     score,
     subscores: { skills: score - 10, experience: score - 7, keywords: score - 4 },
-    adjustedCV: adjustedCV + "
-
-[בוצעו התאמות נוספות קלות]",
+    adjustedCV: `${adjustedCV}\n\n[בוצעו התאמות נוספות קלות]`,
   };
 }
