@@ -7,43 +7,36 @@ import ResultsDisplay from "../components/matcher/ResultsDisplay";
 import { InvokeLLM, UploadFile } from "../lib/core";
 
 export default function CVMatcherPage() {
+  // Inputs
   const [jobPosting, setJobPosting] = useState("");
   const [cvText, setCvText] = useState("");
 
+  // Matching
   const [matchScore, setMatchScore] = useState(null);
   const [matchAnalysis, setMatchAnalysis] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  // Generation
   const [selectedModel, setSelectedModel] = useState("gpt-4");
   const [generatedContent, setGeneratedContent] = useState({});
   const [isGenerating, setIsGenerating] = useState({});
   const [freedomLevel, setFreedomLevel] = useState(5);
 
+  // File/URL processing flags
   const [processingState, setProcessingState] = useState({
-    jobFile: false, jobUrl: false, cvFile: false, cvUrl: false,
+    jobFile: false,
+    jobUrl: false,
+    cvFile: false,
+    cvUrl: false,
   });
-  
-  // יצירת תוכן (סטאב) — ממיר כל תוצאה למחרוזת לתצוגה
-const generateContent = async (type, level = 5) => {
-  if (!jobPosting.trim() || !cvText.trim()) return;
-  setIsGenerating(prev => ({ ...prev, [type]: true }));
-  try {
-    const result = await InvokeLLM({ prompt: `generate ${type} with level ${level}` });
 
-    // אם חזר טקסט – מציגים אותו; אחרת נסה לקחת summary; ואם אין — מדפיס JSON יפה
-    const text =
-      (typeof result === "string" && result) ||
-      result?.text ||
-      result?.summary ||
-      JSON.stringify(result, null, 2);
-
-    setGeneratedContent(prev => ({ ...prev, [type]: text }));
-  } catch (e) {
-    console.error(e);
-  } finally {
-    setIsGenerating(prev => ({ ...prev, [type]: false }));
-  }
-};
+  /** ניתוח התאמה – עטוף תקין בפונקציה */
+  const analyzeMatch = useCallback(async (job, cv) => {
+    if (!job?.trim() || !cv?.trim()) {
+      setMatchScore(null);
+      setMatchAnalysis(null);
+      return;
+    }
 
     setIsAnalyzing(true);
     try {
@@ -59,85 +52,99 @@ const generateContent = async (type, level = 5) => {
             strengths: { type: "array", items: { type: "string" } },
             gaps: { type: "array", items: { type: "string" } },
             recommendations: { type: "array", items: { type: "string" } },
-            summary: { type: "string" }
-          }
-        }
+            summary: { type: "string" },
+          },
+        },
       });
-      setMatchScore(result.match_score);
-      setMatchAnalysis(result);
-    } catch (e) {
-      console.error(e);
-      setMatchScore(null); setMatchAnalysis(null);
+
+      setMatchScore(result?.match_score ?? null);
+      setMatchAnalysis(result ?? null);
+    } catch (err) {
+      console.error(err);
+      setMatchScore(null);
+      setMatchAnalysis(null);
     } finally {
       setIsAnalyzing(false);
     }
   }, []);
 
-  // דיבאונס קל – מנתח אוטומטית אחרי שמקלידים
+  /** דיבאונס קל – מנתח אוטומטית אחרי הקלדה */
   useEffect(() => {
     const t = setTimeout(() => analyzeMatch(jobPosting, cvText), 1200);
     return () => clearTimeout(t);
   }, [jobPosting, cvText, analyzeMatch]);
 
-  // יצירת תוכן (סטאב)
+  /** יצירת תוכן – גרסה יחידה (עם המרה ל-string במקרה של אובייקט) */
   const generateContent = async (type, level = 5) => {
-    if (!jobPosting.trim() || !cvText.trim()) return;
-    setIsGenerating(prev => ({ ...prev, [type]: true }));
+    if (!jobPosting?.trim() || !cvText?.trim()) return;
+    setIsGenerating((p) => ({ ...p, [type]: true }));
     try {
-      const result = await InvokeLLM({ prompt: `generate ${type} with level ${level}` });
-      setGeneratedContent(prev => ({ ...prev, [type]: result }));
-    } catch (e) {
-      console.error(e);
+      const raw = await InvokeLLM({
+        prompt: `generate ${type} with level ${level} using the job and CV the user provided`,
+      });
+
+      const text =
+        typeof raw === "string" ? raw : JSON.stringify(raw ?? {}, null, 2);
+
+      setGeneratedContent((p) => ({ ...p, [type]: text }));
+    } catch (err) {
+      console.error(err);
     } finally {
-      setIsGenerating(prev => ({ ...prev, [type]: false }));
+      setIsGenerating((p) => ({ ...p, [type]: false }));
     }
   };
 
+  /** ניתוח ה-CV שנוצר */
   const analyzeGeneratedCV = () => {
-    if (generatedContent.tailored_cv && jobPosting) {
-      const el = document.getElementById("match-indicator");
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      analyzeMatch(jobPosting, generatedContent.tailored_cv);
+    const text = generatedContent?.tailored_cv;
+    if (text && jobPosting) {
+      document.getElementById("match-indicator")?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      analyzeMatch(jobPosting, text);
     }
   };
 
-  // העלאת קובץ
+  /** העלאת קובץ */
   const handleFileSelect = async (file, type) => {
     if (!file) return;
     const key = `${type}File`;
-    setProcessingState(p => ({ ...p, [key]: true }));
+    setProcessingState((p) => ({ ...p, [key]: true }));
     try {
       const { file_url } = await UploadFile({ file });
-      // בסטאב: רק מדגים שינוי טקסט
-      const txt = `תוכן שהתקבל מקובץ: ${file.name} (${file_url})`;
+      const txt = `תוכן שהתקבל מקובץ: ${file.name} (${file_url})`; // סטאב
       if (type === "job") setJobPosting(txt);
       else setCvText(txt);
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
     } finally {
-      setProcessingState(p => ({ ...p, [key]: false }));
+      setProcessingState((p) => ({ ...p, [key]: false }));
     }
   };
 
-  // טעינה מ־URL
+  /** טעינה מ-URL */
   const handleUrlFetch = async (url, type) => {
     const key = `${type}Url`;
-    setProcessingState(p => ({ ...p, [key]: true }));
+    setProcessingState((p) => ({ ...p, [key]: true }));
     try {
-      // בסטאב: רק מדגים
-      const txt = `תוכן שהובא מ-URL: ${url}`;
+      const txt = `תוכן שהובא מ-URL: ${url}`; // סטאב
       if (type === "job") setJobPosting(txt);
       else setCvText(txt);
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
     } finally {
-      setProcessingState(p => ({ ...p, [key]: false }));
+      setProcessingState((p) => ({ ...p, [key]: false }));
     }
   };
 
   const copyToClipboard = (text) => {
     if (!text) return;
-    navigator?.clipboard?.writeText(text);
+    try {
+      navigator?.clipboard?.writeText(text);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
