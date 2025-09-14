@@ -1,18 +1,27 @@
 import React, { useMemo, useState } from "react";
 
+/**
+ * CV-Magic — page rebuild (LTR layout)
+ * - Main headings in EN, subheadings & UI labels in HE
+ * - Keep page LTR to avoid bidi issues; use dir="auto" only on free-text areas
+ * - Central score console: big ring + 3 small rings
+ * - Notes in collapsible section
+ * - Compact action card: model select + Volume + Run / Double‑Check
+ */
+
+// Models (edit if you load from elsewhere)
 const MODELS = [
   { id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
   { id: "gpt-4o-mini", label: "GPT-4o mini" },
 ];
 
-// SVG ring helper
-function Ring({ value = 0, size = 120, stroke = 10, label, sublabel }) {
+// ===== Rings =====
+function Ring({ value = 0, size = 120, stroke = 10, label, sublabel, colorOverride }) {
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
-  const clamped = Math.max(0, Math.min(100, value));
-  const offset = circumference * (1 - clamped / 100);
-  const color = clamped >= 85 ? "#22c55e" : clamped >= 60 ? "#f59e0b" : "#ef4444";
-
+  const v = Math.max(0, Math.min(100, Number(value) || 0));
+  const offset = circumference * (1 - v / 100);
+  const color = colorOverride || (v >= 85 ? "#22c55e" : v >= 60 ? "#f59e0b" : "#ef4444");
   return (
     <div className="flex flex-col items-center justify-center">
       <svg width={size} height={size} className="block">
@@ -29,16 +38,8 @@ function Ring({ value = 0, size = 120, stroke = 10, label, sublabel }) {
           strokeDashoffset={offset}
           style={{ transition: "stroke-dashoffset 600ms ease" }}
         />
-        <text
-          x="50%"
-          y="50%"
-          dominantBaseline="middle"
-          textAnchor="middle"
-          className="font-semibold"
-          style={{ fontSize: size * 0.26 }}
-          fill="#111827"
-        >
-          {Math.round(clamped)}
+        <text x="50%" y="50%" dominantBaseline="middle" textAnchor="middle" className="font-semibold" style={{ fontSize: size * 0.26 }} fill="#0f172a">
+          {Math.round(v)}
         </text>
       </svg>
       {label && <div className="mt-1 text-sm font-medium text-gray-800">{label}</div>}
@@ -46,23 +47,26 @@ function Ring({ value = 0, size = 120, stroke = 10, label, sublabel }) {
     </div>
   );
 }
-
 function SmallRing({ value, label }) {
   return (
     <div className="flex flex-col items-center">
-      <Ring value={value} size={78} stroke={8} />
+      <Ring value={value} size={78} stroke={8} colorOverride="#f59e0b" />
       <div className="mt-1 text-xs text-gray-600">{label}</div>
     </div>
   );
 }
 
 export default function CVMatcher() {
+  // Inputs
   const [jobText, setJobText] = useState("");
   const [cvText, setCvText] = useState("");
-  const [model, setModel] = useState(MODELS[0].id);
-  const [volume, setVolume] = useState(5);
-  const temperature = 0.5;
 
+  // Controls
+  const [model, setModel] = useState(MODELS[0].id);
+  const [volume, setVolume] = useState(5); // 1..9
+  const temperature = 0.5; // fixed & hidden
+
+  // Outputs
   const [score, setScore] = useState(0);
   const [subscores, setSubscores] = useState({ skills: 0, experience: 0, keywords: 0 });
   const [strengths, setStrengths] = useState([]);
@@ -80,6 +84,7 @@ export default function CVMatcher() {
     return "";
   }, [score]);
 
+  // Actions
   async function onRun() {
     setLoading(true);
     try {
@@ -96,7 +101,6 @@ export default function CVMatcher() {
       setLoading(false);
     }
   }
-
   async function onDoubleCheck() {
     setLoading(true);
     try {
@@ -104,29 +108,27 @@ export default function CVMatcher() {
       setAdjustedCV(res.adjustedCV ?? adjustedCV);
       setScore(res.score ?? score);
       setSubscores(res.subscores ?? subscores);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }
-
   function copy(text) {
-    if (!text) return;
-    navigator.clipboard.writeText(text);
+    if (!text) return; navigator.clipboard.writeText(text);
   }
 
+  // ===== UI =====
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6 text-right">
-      {/* Header */}
-      <div className="text-center space-y-1">
+    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
+      {/* Main headings: EN title + HE subtitle */}
+      <header className="text-center space-y-1">
         <h1 className="text-3xl font-bold">CV-Magic</h1>
-        <p className="text-sm text-gray-600">{`קורות חיים מותאמים בשנייה - שליחת קורות חיים מותאמים עושה את החיים של כולנו קלים`}</p>
-      </div>
+        <p className="text-sm text-gray-600">קורות חיים מותאמים בשנייה - שליחת קורות חיים מותאמים עושה את החיים של כולנו קלים</p>
+      </header>
 
       {/* Inputs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <h2 className="text-base font-medium text-center mb-2">דרישות המשרה</h2>
           <textarea
+            dir="auto"
             value={jobText}
             onChange={(e) => setJobText(e.target.value)}
             placeholder="הדבק כאן את מודעת הדרושים"
@@ -136,16 +138,17 @@ export default function CVMatcher() {
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <h2 className="text-base font-medium text-center mb-2">קורות החיים שלך</h2>
           <textarea
+            dir="auto"
             value={cvText}
             onChange={(e) => setCvText(e.target.value)}
             placeholder="הדבק כאן את קו״ח שלך"
             className="w-full h-48 resize-y rounded-xl border border-gray-200 p-3 focus:outline-none focus:ring-2 focus:ring-gray-300"
           />
         </div>
-      </div>
+      </section>
 
-      {/* Central console + compact content card */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+      {/* Central console + compact action card */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         {/* Central console */}
         <div className="bg-white rounded-2xl shadow-sm p-6 col-span-1 lg:col-span-2">
           <h3 className="text-lg font-medium mb-4 text-center">ציון התאמה</h3>
@@ -159,6 +162,7 @@ export default function CVMatcher() {
                 <SmallRing value={subscores.experience} label="ניסיון" />
                 <SmallRing value={subscores.keywords} label="מילות מפתח" />
               </div>
+              {/* Notes */}
               <details className="mt-6 group">
                 <summary className="cursor-pointer list-none select-none flex items-center gap-2 text-sm font-medium text-gray-800">
                   <span>הערות והארות נוספות</span>
@@ -167,15 +171,21 @@ export default function CVMatcher() {
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                   <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
                     <div className="font-semibold mb-2">חוזקות</div>
-                    {strengths?.length ? strengths.map((s, i) => <li key={i} className="list-disc mr-5">{s}</li>) : <li className="text-gray-500">—</li>}
+                    {strengths?.length ? strengths.map((s, i) => (
+                      <li key={i} className="list-disc ml-5">{s}</li>
+                    )) : <li className="text-gray-500">—</li>}
                   </ul>
                   <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
                     <div className="font-semibold mb-2">פערים</div>
-                    {gaps?.length ? gaps.map((s, i) => <li key={i} className="list-disc mr-5">{s}</li>) : <li className="text-gray-500">—</li>}
+                    {gaps?.length ? gaps.map((s, i) => (
+                      <li key={i} className="list-disc ml-5">{s}</li>
+                    )) : <li className="text-gray-500">—</li>}
                   </ul>
                   <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
                     <div className="font-semibold mb-2">המלצות</div>
-                    {recs?.length ? recs.map((s, i) => <li key={i} className="list-disc mr-5">{s}</li>) : <li className="text-gray-500">—</li>}
+                    {recs?.length ? recs.map((s, i) => (
+                      <li key={i} className="list-disc ml-5">{s}</li>
+                    )) : <li className="text-gray-500">—</li>}
                   </ul>
                 </div>
               </details>
@@ -183,7 +193,7 @@ export default function CVMatcher() {
           </div>
         </div>
 
-        {/* Compact content card */}
+        {/* Action card */}
         <div className="bg-white rounded-2xl shadow-sm p-6 space-y-4">
           <h3 className="text-lg font-medium text-center">הפק קורות חיים מותאמים</h3>
           <div className="space-y-3">
@@ -193,7 +203,9 @@ export default function CVMatcher() {
               onChange={(e) => setModel(e.target.value)}
               className="w-full rounded-xl border border-gray-200 p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-300"
             >
-              {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {MODELS.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
             </select>
           </div>
           <div className="space-y-2">
@@ -204,7 +216,7 @@ export default function CVMatcher() {
             <div className="px-1">
               <input type="range" min={1} max={9} step={1} value={volume} onChange={(e) => setVolume(Number(e.target.value))} className="w-full accent-black" />
               <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-                {Array.from({ length: 9 }).map((_, i) => <span key={i}>{i+1}</span>)}
+                {Array.from({ length: 9 }).map((_, i) => <span key={i}>{i + 1}</span>)}
               </div>
             </div>
           </div>
@@ -214,44 +226,60 @@ export default function CVMatcher() {
           </div>
           <div className="text-xs text-gray-500">Runs: {runs}</div>
         </div>
-      </div>
+      </section>
 
       {/* Outputs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h3 className="text-base font-medium text-center mb-2">קורות חיים מותאמים</h3>
-          <button onClick={() => copy(adjustedCV)} className="text-xs underline mb-2">העתק</button>
-          <pre className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{adjustedCV || "—"}</pre>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-base font-medium">מכתב מקדים</h3>
+            <button onClick={() => copy(coverLetter)} className="text-xs underline">העתק</button>
+          </div>
+          <pre dir="auto" className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{coverLetter || "—"}</pre>
         </div>
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h3 className="text-base font-medium text-center mb-2">מכתב מקדים</h3>
-          <button onClick={() => copy(coverLetter)} className="text-xs underline mb-2">העתק</button>
-          <pre className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{coverLetter || "—"}</pre>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-base font-medium">קורות חיים מותאמים</h3>
+            <button onClick={() => copy(adjustedCV)} className="text-xs underline">העתק</button>
+          </div>
+          <pre dir="auto" className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{adjustedCV || "—"}</pre>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
 
-// —— Temporary mocks ——
+// ===== Temporary mocks (remove when connected to backend) =====
 async function fakeApi(jobText, cvText, model, volume, temperature) {
-  await new Promise((r) => setTimeout(r, 600));
-  const base = 50 + Math.min(40, (jobText.length + cvText.length) % 51);
+  await new Promise((r) => setTimeout(r, 400));
+  const base = 60 + Math.min(30, ((jobText.length + cvText.length + volume * 7) % 41));
   const score = Math.min(100, Math.round(base));
   return {
     score,
-    subscores: { skills: score - 5, experience: score - 10, keywords: score - 15 },
-    strengths: ["ניהול צוותים", "ניסיון במלונאות", "שירותיות"],
-    gaps: ["אין דוגמאות לבקרת תהליכים"],
-    recommendations: ["להוסיף KPI ותוצאות כמותיות"],
-    adjustedCV: `\nסיכום מקצועי\n—\n${cvText.slice(0, 200)}...`,
-    coverLetter: `שלום, מצרף קורות חיים למשרתכם. לדעתי התאמה גבוהה (${score}%).`,
+    subscores: {
+      skills: Math.max(0, score - 11),
+      experience: Math.max(0, score - 8),
+      keywords: Math.max(0, score - 5),
+    },
+    strengths: ["ניהול צוותים", "שירותיות גבוהה", "התאמה לדינמיקה ארגונית"],
+    gaps: ["חסר פירוט KPI בפרויקטים אחרונים"],
+    recommendations: ["להוסיף תוצאות כמותיות (מדדים) לכל תפקיד"],
+    adjustedCV: `
+סיכום מקצועי
+—
+${cvText.slice(0, 220)}...`,
+    coverLetter: `שלום, מצרף/ת קורות חיים למשרתכם. להתרשמותכם, ציון התאמה כולל ${score}%.`,
   };
 }
-
 async function fakeDouble(adjustedCV, jobText, model) {
-  await new Promise((r) => setTimeout(r, 400));
-  const bump = Math.min(5, Math.round(adjustedCV.length % 6));
-  const score = Math.min(100, 80 + bump);
-  return { score, subscores: { skills: score - 4, experience: score - 9, keywords: score - 12 }, adjustedCV: adjustedCV + "\n\n[עוד התאמות קלות בוצעו]" };
+  await new Promise((r) => setTimeout(r, 300));
+  const bump = Math.min(5, Math.round((adjustedCV.length + jobText.length) % 6));
+  const score = Math.min(100, 82 + bump);
+  return {
+    score,
+    subscores: { skills: score - 10, experience: score - 7, keywords: score - 4 },
+    adjustedCV: adjustedCV + "
+
+[בוצעו התאמות נוספות קלות]",
+  };
 }
