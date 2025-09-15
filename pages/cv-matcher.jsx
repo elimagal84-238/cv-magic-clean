@@ -31,6 +31,19 @@ function scoreColor(p) {
   return "#22c55e"; // green-500
 }
 
+// Mobile breakpoint helper (for responsive ring sizes / layout)
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const on = (e) => setIsMobile(e.matches);
+    on(mq);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return isMobile;
+}
+
 // ---------- ring gauge ----------
 function RingGauge({ label, value = 0, size = 150, stroke = 14, onClick, title }) {
   const r = (size - stroke) / 2;
@@ -107,6 +120,11 @@ export default function CVMatcher() {
   const [modelCL, setModelCL] = useState("chatgpt");
   const [modelCV, setModelCV] = useState("chatgpt");
   const [isRunning, setIsRunning] = useState(false);
+
+  // responsive helpers
+  const isMobile = useIsMobile();
+  const ringSmall = isMobile ? 96 : 120;
+  const ringCenter = isMobile ? 140 : 180;
 
   // persistence: CV, slider, role, runIndex
   useEffect(() => {
@@ -260,47 +278,58 @@ export default function CVMatcher() {
             </div>
           </div>
 
-          <div className="grid grid-cols-5 gap-4 items-center justify-items-center">
+          {/* Responsive 5-ring layout */}
+          <div className="grid grid-cols-3 md:grid-cols-5 gap-4 items-center justify-items-center">
             {/* left */}
-            <RingGauge
-              label="Keywords"
-              value={scores.keywords}
-              size={120}
-              title="Alignment with job ad terminology"
-              onClick={() => alert("Keywords tips…")}
-            />
-            <RingGauge
-              label="Requirements Coverage"
-              value={scores.reqcov}
-              size={120}
-              title="Coverage of must-have vs nice-to-have"
-              onClick={() => alert("Requirements tips…")}
-            />
+            <div className="col-span-1">
+              <RingGauge
+                label="Keywords"
+                value={scores.keywords}
+                size={ringSmall}
+                title="Alignment with job ad terminology"
+                onClick={() => alert("Keywords tips…")}
+              />
+            </div>
+            <div className="col-span-1">
+              <RingGauge
+                label="Requirements Coverage"
+                value={scores.reqcov}
+                size={ringSmall}
+                title="Coverage of must-have vs nice-to-have"
+                onClick={() => alert("Requirements tips…")}
+              />
+            </div>
 
-            {/* center */}
-            <RingGauge
-              label="Match Score"
-              value={scores.match}
-              size={180}
-              title="Overall fit for the job (click to re-run)"
-              onClick={() => runOnce("all", "chatgpt")}
-            />
+            {/* center spans full row on mobile */}
+            <div className="col-span-3 md:col-span-1">
+              <RingGauge
+                label="Match Score"
+                value={scores.match}
+                size={ringCenter}
+                title="Overall fit for the job (click to re-run)"
+                onClick={() => runOnce("all", "chatgpt")}
+              />
+            </div>
 
             {/* right */}
-            <RingGauge
-              label="Experience"
-              value={scores.experience}
-              size={120}
-              title="Years and recency match"
-              onClick={() => alert("Experience tips…")}
-            />
-            <RingGauge
-              label="Skills"
-              value={scores.skills}
-              size={120}
-              title="Percentage of required skills present"
-              onClick={() => alert("Skills tips…")}
-            />
+            <div className="col-span-1">
+              <RingGauge
+                label="Experience"
+                value={scores.experience}
+                size={ringSmall}
+                title="Years and recency match"
+                onClick={() => alert("Experience tips…")}
+              />
+            </div>
+            <div className="col-span-1">
+              <RingGauge
+                label="Skills"
+                value={scores.skills}
+                size={ringSmall}
+                title="Percentage of required skills present"
+                onClick={() => alert("Skills tips…")}
+              />
+            </div>
           </div>
 
           {/* Slider */}
