@@ -1,0 +1,12 @@
+// src/lib/skills-taxonomy.json
+[
+  "javascript","typescript","react","node","express","nextjs","html","css","sass",
+  "python","django","flask","pandas","numpy","scikit-learn",
+  "java","spring","kotlin",
+  "c#","dotnet",".net","asp.net",
+  "sql","postgres","mysql","mongodb","redis",
+  "aws","gcp","azure","docker","kubernetes","terraform",
+  "git","ci","cd","jira","confluence",
+  "analytics","ga4","seo","sem","content",
+  "matlab","r","tableau","powerbi"
+]
