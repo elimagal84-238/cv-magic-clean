@@ -1,449 +1,458 @@
-// pages/cv-matcher.jsx
-import { useEffect, useMemo, useState } from "react";
+// /src/components/cv-matcher.jsx
+// CV-Magic — v1.4.0 (full file)
+// Adds: Live Assistant chat (full-width) that opens only after first Run,
+// begins with natural-language ATS insights, and talks to /api/assist.
+// JD clears on refresh + Clear button; CV persisted locally + Clear.
+// Mobile-friendly gauges, sliders with role profiles, and outputs.
 
-const LS_KEYS = {
-  cv: "cvMagic.cvText",
-  slider: "cvMagic.creativitySlider",
-  role: "cvMagic.rolePreset",
-  runIdx: "cvMagic.runIndex",
+import React, { useEffect, useMemo, useState, useRef } from "react";
+
+// ---------- utils ----------
+const STORAGE_KEYS = { CV: "cvMagic_userCV_v1" };
+const clamp = (n, min = 0, max = 100) => Math.max(min, Math.min(max, n));
+const ringStyle = (v) => ({ background: `conic-gradient(currentColor ${clamp(v) * 3.6}deg, rgba(0,0,0,0.08) 0deg)` });
+
+const classes = {
+  card: "rounded-2xl shadow-sm border border-gray-200 bg-white p-4",
+  label: "text-xs font-medium text-gray-500",
+  input: "w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-gray-300",
+  btn: "inline-flex items-center justify-center rounded-xl px-4 py-2 font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50",
+  btnGhost: "inline-flex items-center justify-center rounded-xl px-3 py-2 font-medium border border-gray-300 hover:bg-gray-50",
+  title: "text-sm font-semibold text-gray-700",
 };
 
-const ROLE_PRESETS = {
-  Surgeon: { min: 0.1, max: 0.4, step: 0.05 },
-  Accountant: { min: 0.15, max: 0.45, step: 0.05 },
-  "Product Manager": { min: 0.3, max: 0.7, step: 0.07 },
-  Copywriter: { min: 0.4, max: 0.9, step: 0.1 },
+const ROLE_PROFILES = {
+  "General (default)": { tempMin: 0.2, tempMax: 0.8, strictMin: 0.3, strictMax: 0.8 },
+  "Software Engineer": { tempMin: 0.1, tempMax: 0.6, strictMin: 0.6, strictMax: 0.95 },
+  "Product Manager": { tempMin: 0.2, tempMax: 0.9, strictMin: 0.4, strictMax: 0.85 },
+  "Data Analyst": { tempMin: 0.1, tempMax: 0.7, strictMin: 0.5, strictMax: 0.9 },
+  "Marketing": { tempMin: 0.3, tempMax: 1.0, strictMin: 0.2, strictMax: 0.8 },
+  "Copywriter": { tempMin: 0.4, tempMax: 1.0, strictMin: 0.2, strictMax: 0.8 },
 };
 
-const defaultRole = "Surgeon";
+// ---------- naive analyzers ----------
+const tokenize = (t) =>
+  (t || "")
+    .toLowerCase()
+    .replace(/[^a-z\u0590-\u05FF0-9\s]/gi, " ")
+    .split(/\s+/)
+    .filter(Boolean);
 
-// ---------- helpers ----------
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
-const lerp = (a, b, t) => a + (b - a) * t;
-function computeTemp(slider /*1..9*/, rolePreset, runIndex) {
-  const base01 = (Number(slider) - 1) / 8; // 0..1
-  const tBase = lerp(rolePreset.min, rolePreset.max, clamp01(base01));
-  return Math.min(rolePreset.max, tBase + (runIndex || 0) * rolePreset.step);
-}
-function scoreColor(p) {
-  if (p < 50) return "#ef4444"; // red-500
-  if (p < 75) return "#f59e0b"; // amber-500
-  return "#22c55e"; // green-500
+const uniq = (arr) => Array.from(new Set(arr));
+
+function keywordOverlapScore(jd, cv) {
+  const jdT = uniq(tokenize(jd));
+  const cvT = uniq(tokenize(cv));
+  if (!jdT.length) return 0;
+  const overlap = jdT.filter((t) => cvT.includes(t));
+  return clamp(Math.round((overlap.length / jdT.length) * 100));
 }
 
-// Mobile breakpoint helper (for responsive ring sizes / layout)
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(false);
+function skillsScore(jd, cv) {
+  const skillish = (w) => /[0-9+\-/#.]|^[A-Z]{2,}$/.test(w);
+  const jdT = uniq(tokenize(jd)).filter(skillish);
+  const cvT = uniq(tokenize(cv));
+  if (!jdT.length) return 0;
+  const hit = jdT.filter((t) => cvT.includes(t));
+  return clamp(Math.round((hit.length / jdT.length) * 100));
+}
+
+function experienceScore(jd, cv) {
+  const nums = (t) => (t.match(/\b(\d{1,2})\b/g) || []).map((n) => parseInt(n, 10));
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  const j = sum(nums(jd));
+  const c = sum(nums(cv));
+  if (!j && !c) return 50;
+  if (!j) return 70;
+  const ratio = c / (j || 1);
+  return clamp(50 + Math.min(50, Math.round((ratio - 1) * 25)));
+}
+
+function requirementsCoverageScore(jd, cv) {
+  const lines = (jd.match(/^-|\*|•/gm) ? jd.split(/\n/) : []).filter((l) => /^(\-|\*|•)/.test(l.trim()));
+  if (!lines.length) return Math.max(40, keywordOverlapScore(jd, cv) - 10);
+  const covered = lines.filter((l) => keywordOverlapScore(l, cv) >= 40);
+  return clamp(Math.round((covered.length / lines.length) * 100));
+}
+
+function overallMatchScore(p) {
+  const { keywords, skills, experience, requirements } = p;
+  return clamp(Math.round(keywords * 0.25 + skills * 0.25 + experience * 0.2 + requirements * 0.3));
+}
+
+// ---------- generators ----------
+function paraphrase(text, temperature = 0.3, strictness = 0.7) {
+  if (!text) return "";
+  let out = text;
+  if (temperature > 0.6) {
+    const pairs = [
+      ["improve", "enhance"], ["manage", "lead"], ["build", "develop"],
+      ["create", "craft"], ["optimize", "streamline"], ["experience", "background"],
+    ];
+    pairs.forEach(([a, b]) => (out = out.replace(new RegExp(`\\b${a}\\b`, "gi"), b)));
+  }
+  if (strictness > 0.7) out = out.replace(/\bexpert\b/gi, "experienced");
+  return out;
+}
+
+function generateCoverLetter(jd, cv, match) {
+  const name = (cv.match(/^\s*([A-Z][^\n]+)/im) || [,"Candidate"])[1];
+  const company = (jd.match(/\b(?:at|@)\s+([A-Z][A-Za-z0-9&\-\s]+)/i) || [,"your company"])[1].trim();
+  return [
+    `${name}`,
+    ``,
+    `Dear Hiring Team at ${company},`,
+    ``,
+    `I’m excited to apply for the role described. Based on my background, I estimate a fit of ~${match}%.`,
+    `I look forward to discussing how I can contribute.`,
+    ``,
+    `Best regards,`,
+    `${name}`,
+  ].join("\n");
+}
+
+function generateTailoredCV(jd, cv, { temp, strict }) {
+  const jdWords = uniq(tokenize(jd)).slice(0, 20);
+  const highlights = jdWords.slice(0, 10).join(", ");
+  return [
+    `TARGETED SUMMARY`,
+    `• Focus areas: ${highlights}`,
+    ``,
+    `EXPERIENCE & SKILLS (Tailored)`,
+    `${paraphrase(cv, temp, strict)}`,
+  ].join("\n");
+}
+
+function scoresToTips(s) {
+  const parts = [];
+  if (s.keywords < 60) parts.push("חסר חפיפה למילות מפתח במודעת הדרושים — שלב עוד מונחים ייחודיים.");
+  if (s.skills < 60) parts.push("זיהוי כישורים נמוך — הדגש טכנולוגיות/כלים/שיטות ספציפיות.");
+  if (s.experience < 60) parts.push("וותק/מספרים לא בולטים — הוסף שנים, היקפים ותוצאות מדידות.");
+  if (s.requirements < 60) parts.push("כיסוי דרישות חלקי — עבור סעיפי בולטים ויישר ניסוחים.");
+  if (!parts.length) parts.push("נראה טוב! נלטש ניסוחים ונחזק ראיות מספריות.");
+  return parts;
+}
+
+// ---------- Chat Panel ----------
+function ChatPanel({ visible, context, onApplyToCover, onApplyToCV }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const boxRef = useRef(null);
+
+  // seed first tips when opening
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    const on = (e) => setIsMobile(e.matches);
-    on(mq);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return isMobile;
-}
+    if (!visible) return;
+    if (messages.length) return;
+    const tips = scoresToTips(context.scores);
+    const intro = {
+      role: "assistant",
+      text:
+        `ברוך הבא ל-Live Assistant. להלן תובנות מה-ATS:\n` +
+        tips.map((t, i) => `• ${t}`).join("\n") +
+        `\nאיך תרצה לשפר תחילה — קורות חיים או מכתב מקדים?`,
+    };
+    setMessages([intro]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
-// ---------- ring gauge ----------
-function RingGauge({ label, value = 0, size = 150, stroke = 14, onClick, title }) {
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(100, Number(value || 0)));
-  const dash = (pct / 100) * c;
-  const color = scoreColor(pct);
+  useEffect(() => {
+    if (!boxRef.current) return;
+    boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [messages]);
+
+  async function send() {
+    const msg = input.trim();
+    if (!msg) return;
+    setMessages((m) => [...m, { role: "user", text: msg }]);
+    setInput("");
+    try {
+      const res = await fetch("/api/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are CV-Magic's Live Assistant. Be concise. Improve CV and cover letters using the provided context and ATS scores. Hebrew UI.",
+            },
+            {
+              role: "user",
+              content:
+                `Context:\nJD:\n${context.jd}\n\nCV:\n${context.cv}\n\nScores:${JSON.stringify(
+                  context.scores
+                )}\nTemp:${context.temp} Strict:${context.strict}\n\nUser: ${msg}`,
+            },
+          ],
+        }),
+      });
+      const data = await res.json();
+      const answer = data?.message || "שגיאה: לא התקבלה תשובה.";
+      setMessages((m) => [...m, { role: "assistant", text: answer }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", text: "אירעה שגיאה מצד השרת." }]);
+    }
+  }
+
   return (
-    <button
-      className="relative inline-flex items-center justify-center"
-      style={{ width: size, height: size }}
-      onClick={onClick}
-      title={title}
-      type="button"
-    >
-      <svg width={size} height={size}>
-        <circle cx={size / 2} cy={size / 2} r={r} stroke="#e5e7eb" strokeWidth={stroke} fill="none" />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          stroke={color}
-          strokeWidth={stroke}
-          fill="none"
-          strokeDasharray={`${dash} ${c - dash}`}
-          strokeLinecap="round"
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <div className="text-2xl font-semibold">{pct}%</div>
-        <div className="text-xs text-gray-600">{label}</div>
+    <div className={`${visible ? "" : "hidden"} ${classes.card}`}>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className={classes.title}>Live Assistant</h3>
+        <div className="flex gap-2">
+          <button className={classes.btnGhost} onClick={() => onApplyToCover(messages)}>
+            Apply to Cover Letter
+          </button>
+          <button className={classes.btnGhost} onClick={() => onApplyToCV(messages)}>
+            Apply to Tailored CV
+          </button>
+        </div>
       </div>
-    </button>
+      <div
+        ref={boxRef}
+        className="h-64 overflow-y-auto rounded-xl border border-gray-200 p-3 bg-gray-50"
+      >
+        {messages.map((m, i) => (
+          <div key={i} className={`mb-3 ${m.role === "user" ? "text-right" : "text-left"}`}>
+            <div
+              className={`inline-block max-w-[85%] px-3 py-2 rounded-2xl ${
+                m.role === "user" ? "bg-black text-white" : "bg-white border border-gray-200"
+              }`}
+            >
+              <pre className="whitespace-pre-wrap break-words text-sm">{m.text}</pre>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input
+          className={classes.input}
+          placeholder="כתוב הודעה…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+        />
+        <button className={classes.btn} onClick={send}>Send</button>
+      </div>
+    </div>
   );
 }
 
-// ---------- copy helper ----------
-async function copyText(txt) {
-  try {
-    await navigator.clipboard.writeText(txt || "");
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = txt || "";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-  }
-}
-
+// ---------- main component ----------
 export default function CVMatcher() {
-  // top inputs
-  const [job, setJob] = useState("");
-  const [cv, setCv] = useState("");
+  const [jobDesc, setJobDesc] = useState("");
+  const [userCV, setUserCV] = useState("");
+  const [roleProfile, setRoleProfile] = useState("General (default)");
+  const [temp, setTemp] = useState(0.3);
+  const [strict, setStrict] = useState(0.7);
+  const [scores, setScores] = useState({ match: 0, skills: 0, experience: 0, keywords: 0, requirements: 0 });
+  const [coverLetter, setCoverLetter] = useState("");
+  const [tailoredCV, setTailoredCV] = useState("");
+  const [running, setRunning] = useState(false);
+  const [hasRun, setHasRun] = useState(false); // controls chat visibility
 
-  // console scores
-  const [scores, setScores] = useState({
-    match: 0,
-    keywords: 0,
-    reqcov: 0,
-    experience: 0,
-    skills: 0,
-  });
-
-  // bottom outputs
-  const [cover, setCover] = useState("");
-  const [tailored, setTailored] = useState("");
-
-  // controls
-  const [slider, setSlider] = useState(3); // 1..9
-  const [role, setRole] = useState(defaultRole);
-  const [runIndex, setRunIndex] = useState(0);
-  const [modelCL, setModelCL] = useState("chatgpt");
-  const [modelCV, setModelCV] = useState("chatgpt");
-  const [isRunning, setIsRunning] = useState(false);
-
-  // responsive helpers
-  const isMobile = useIsMobile();
-  const ringSmall = isMobile ? 96 : 120;
-  const ringCenter = isMobile ? 140 : 180;
-
-  // persistence: CV, slider, role, runIndex
+  // persist CV; JD not persisted by design
   useEffect(() => {
-    try {
-      const cv0 = localStorage.getItem(LS_KEYS.cv);
-      const s0 = localStorage.getItem(LS_KEYS.slider);
-      const r0 = localStorage.getItem(LS_KEYS.role);
-      const i0 = localStorage.getItem(LS_KEYS.runIdx);
-      if (cv0) setCv(cv0);
-      if (s0) setSlider(Number(s0));
-      if (r0 && ROLE_PRESETS[r0]) setRole(r0);
-      if (i0) setRunIndex(Number(i0));
-    } catch {}
+    const saved = localStorage.getItem(STORAGE_KEYS.CV);
+    if (saved) setUserCV(saved);
   }, []);
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CV, userCV || "");
+  }, [userCV]);
+
+  const ranges = useMemo(() => ROLE_PROFILES[roleProfile], [roleProfile]);
+  useEffect(() => {
+    setTemp((t) => Math.min(Math.max(t, ranges.tempMin), ranges.tempMax));
+    setStrict((s) => Math.min(Math.max(s, ranges.strictMin), ranges.strictMax));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleProfile]);
+
+  function clearJD() { setJobDesc(""); }
+  function clearCV() { setUserCV(""); localStorage.removeItem(STORAGE_KEYS.CV); }
+  const copy = (t) => navigator.clipboard?.writeText(t || "");
+
+  async function runAnalysis() {
+    setRunning(true);
     try {
-      localStorage.setItem(LS_KEYS.cv, cv || "");
-      localStorage.setItem(LS_KEYS.slider, String(slider));
-      localStorage.setItem(LS_KEYS.role, role);
-      localStorage.setItem(LS_KEYS.runIdx, String(runIndex));
-    } catch {}
-  }, [cv, slider, role, runIndex]);
-
-  // temperature for current settings
-  const temp = useMemo(() => computeTemp(slider, ROLE_PRESETS[role], runIndex), [slider, role, runIndex]);
-
-  // main run
-  async function runOnce(target = "all", modelPref = "chatgpt") {
-    if (!job || !cv) {
-      alert("Paste both Job Description and Your CV.");
-      return;
-    }
-    setIsRunning(true);
-    try {
-      const body = {
-        job_description: job,
-        cv_text: cv,
-        role_preset: ROLE_PRESETS[role],
-        slider: Number(slider),
-        run_index: Number(runIndex),
-        temperature: temp,
-        model_pref: modelPref, // "chatgpt" | "gemini" | "claude"
-        target, // "all" | "cover" | "cv"
-      };
-      const res = await fetch("/api/openai-match", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data?.error) throw new Error(data.error);
-
-      if (data.scores) {
-        setScores({
-          match: data.scores.match_score ?? 0,
-          keywords: data.scores.keywords ?? 0,
-          reqcov: data.scores.requirements_coverage ?? 0,
-          experience: data.scores.experience ?? 0,
-          skills: data.scores.skills ?? 0,
-        });
-      }
-      if (data.tailored_cv) setTailored(data.tailored_cv);
-      if (data.cover_letter) setCover(data.cover_letter);
-
-      setRunIndex((x) => x + 1);
-    } catch (e) {
-      console.error(e);
-      alert("Run failed. See console.");
+      const k = keywordOverlapScore(jobDesc, userCV);
+      const s = skillsScore(jobDesc, userCV);
+      const e = experienceScore(jobDesc, userCV);
+      const r = requirementsCoverageScore(jobDesc, userCV);
+      const m = overallMatchScore({ keywords: k, skills: s, experience: e, requirements: r });
+      setScores({ match: m, skills: s, experience: e, keywords: k, requirements: r });
+      setCoverLetter(generateCoverLetter(jobDesc, userCV, m));
+      setTailoredCV(generateTailoredCV(jobDesc, userCV, { temp, strict }));
+      setHasRun(true);
     } finally {
-      setIsRunning(false);
+      setRunning(false);
     }
   }
 
-  // UI
+  function reRunAI() {
+    setCoverLetter((t) => paraphrase(t, temp, strict));
+    setTailoredCV((t) => paraphrase(t, temp + 0.1, strict));
+  }
+
+  function applyMessagesToCover(msgs) {
+    const last = msgs.filter((m) => m.role === "assistant").slice(-1)[0]?.text || "";
+    if (!last) return;
+    setCoverLetter((t) => `${t}\n\n---\nAssistant suggestions:\n${last}`);
+  }
+  function applyMessagesToCV(msgs) {
+    const last = msgs.filter((m) => m.role === "assistant").slice(-1)[0]?.text || "";
+    if (!last) return;
+    setTailoredCV((t) => `${t}\n\n---\nAssistant suggestions:\n${last}`);
+  }
+
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900">
-      <div className="mx-auto max-w-6xl p-6 space-y-6">
-        {/* Top row: Job + CV */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Job Description card (WITH Clear button) */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="font-semibold mb-2">Job Description</div>
-            <textarea
-              className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
-              placeholder="Paste the job ad here…"
-              value={job}
-              onChange={(e) => setJob(e.target.value)}
-            />
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-xs text-gray-500">Clears on refresh/exit</span>
-              <button
-                type="button"
-                className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-                onClick={() => setJob("")}
-              >
-                Clear
-              </button>
-            </div>
+    <div className="w-full max-w-6xl mx-auto px-4 py-6">
+      {/* Top: Inputs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={classes.card}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={classes.title}>Job Description</h3>
+            <button onClick={clearJD} className={classes.btnGhost}>Clear</button>
           </div>
-
-          {/* Your CV card (persists) */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="font-semibold mb-2">Your CV</div>
-            <textarea
-              className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
-              placeholder="Paste your CV here… (persists locally)"
-              value={cv}
-              onChange={(e) => setCv(e.target.value)}
-            />
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-xs text-gray-500">Saved locally</span>
-              <button
-                type="button"
-                className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-                onClick={() => setCv("")}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
+          <textarea
+            className={classes.input + " h-48"}
+            placeholder="Paste the job ad here… (clears on refresh/exit)"
+            value={jobDesc}
+            onChange={(e) => setJobDesc(e.target.value)}
+          />
+          <p className="mt-2 text-xs text-gray-500">* Clears on refresh/exit.</p>
         </div>
 
-        {/* Middle: ATS console */}
-        <div className="bg-white rounded-xl shadow p-6">
-          <div className="flex flex-wrap items-center gap-3 mb-4">
-            <div className="text-lg font-semibold">ATS Console</div>
-            <div className="ml-auto flex items-center gap-2">
-              <label className="text-sm text-gray-600">Role Strictness</label>
-              <select
-                className="rounded-md border p-1 text-sm"
-                value={role}
-                onChange={(e) => {
-                  setRole(e.target.value);
-                  setRunIndex(0);
-                }}
-              >
-                {Object.keys(ROLE_PRESETS).map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
+        <div className={classes.card}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={classes.title}>Your CV</h3>
+            <button onClick={clearCV} className={classes.btnGhost}>Clear</button>
+          </div>
+          <textarea
+            className={classes.input + " h-48"}
+            placeholder="Paste your CV here… (saved locally)"
+            value={userCV}
+            onChange={(e) => setUserCV(e.target.value)}
+          />
+          <p className="mt-2 text-xs text-gray-500">* Saved locally (localStorage).</p>
+        </div>
+      </div>
+
+      {/* Middle: ATS Console */}
+      <div className="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
+        {/* Gauges */}
+        <div className="xl:col-span-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <GaugeCard title="Keywords" value={scores.keywords} />
+          <GaugeCard title="Requirements Coverage" value={scores.requirements} />
+          <GaugeCard title="Match Score" value={scores.match} />
+          <GaugeCard title="Experience" value={scores.experience} />
+          <GaugeCard title="Skills" value={scores.skills} />
+        </div>
+
+        {/* Controls */}
+        <div className={classes.card}>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className={classes.label}>Role Strictness</label>
+              <select className={classes.input} value={roleProfile} onChange={(e) => setRoleProfile(e.target.value)}>
+                {Object.keys(ROLE_PROFILES).map((k) => (<option key={k} value={k}>{k}</option>))}
               </select>
-              <div
-                className="text-sm text-gray-500"
-                title={`min=${ROLE_PRESETS[role].min.toFixed(2)}, max=${ROLE_PRESETS[role].max.toFixed(
-                  2
-                )}, step=${ROLE_PRESETS[role].step.toFixed(2)}`}
-              >
-                temp ≈ {temp.toFixed(2)}
-              </div>
-            </div>
-          </div>
-
-          {/* Responsive 5-ring layout */}
-          <div className="grid grid-cols-3 md:grid-cols-5 gap-4 items-center justify-items-center">
-            {/* left */}
-            <div className="col-span-1">
-              <RingGauge
-                label="Keywords"
-                value={scores.keywords}
-                size={ringSmall}
-                title="Alignment with job ad terminology"
-                onClick={() => alert("Keywords tips…")}
-              />
-            </div>
-            <div className="col-span-1">
-              <RingGauge
-                label="Requirements Coverage"
-                value={scores.reqcov}
-                size={ringSmall}
-                title="Coverage of must-have vs nice-to-have"
-                onClick={() => alert("Requirements tips…")}
-              />
             </div>
 
-            {/* center spans full row on mobile */}
-            <div className="col-span-3 md:col-span-1">
-              <RingGauge
-                label="Match Score"
-                value={scores.match}
-                size={ringCenter}
-                title="Overall fit for the job (click to re-run)"
-                onClick={() => runOnce("all", "chatgpt")}
-              />
-            </div>
+            <SliderRow
+              label="Creativity (Temperature)"
+              hint={`Range ${ranges.tempMin}–${ranges.tempMax}`}
+              min={ranges.tempMin}
+              max={ranges.tempMax}
+              step={0.05}
+              value={temp}
+              onChange={(v) => setTemp(v)}
+            />
 
-            {/* right */}
-            <div className="col-span-1">
-              <RingGauge
-                label="Experience"
-                value={scores.experience}
-                size={ringSmall}
-                title="Years and recency match"
-                onClick={() => alert("Experience tips…")}
-              />
-            </div>
-            <div className="col-span-1">
-              <RingGauge
-                label="Skills"
-                value={scores.skills}
-                size={ringSmall}
-                title="Percentage of required skills present"
-                onClick={() => alert("Skills tips…")}
-              />
-            </div>
-          </div>
+            <SliderRow
+              label="Role Strictness"
+              hint={`Range ${ranges.strictMin}–${ranges.strictMax}`}
+              min={ranges.strictMin}
+              max={ranges.strictMax}
+              step={0.05}
+              value={strict}
+              onChange={(v) => setStrict(v)}
+            />
 
-          {/* Slider */}
-          <div className="mt-6">
             <div className="flex items-center gap-3">
-              <div className="text-sm font-medium">Creativity</div>
-              <input
-                type="range"
-                min={1}
-                max={9}
-                value={slider}
-                onChange={(e) => {
-                  setSlider(Number(e.target.value));
-                  setRunIndex(0);
-                }}
-                className="flex-1"
-                aria-label="Creativity"
-              />
-              <div className="w-10 text-right text-sm text-gray-600">{slider}</div>
-              <button
-                type="button"
-                className="px-3 py-1 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-                disabled={isRunning}
-                onClick={() => runOnce("all", "chatgpt")}
-                title="Re-run all (center ring action)"
-              >
-                {isRunning ? "Running…" : "Run"}
+              <button className={classes.btn} onClick={runAnalysis} disabled={!jobDesc || !userCV || running}>
+                {running ? "Running…" : "Run"}
               </button>
+              <span className="text-xs text-gray-500">Chat opens after first run.</span>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Bottom row: outputs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Cover Letter */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="font-semibold">Cover Letter</div>
-              <div className="flex items-center gap-2">
-                <select
-                  className="rounded-md border p-1 text-sm"
-                  value={modelCL}
-                  onChange={(e) => setModelCL(e.target.value)}
-                  title="Choose AI model"
-                >
-                  <option value="chatgpt">ChatGPT</option>
-                  <option value="gemini">Gemini</option>
-                  <option value="claude">Claude</option>
-                </select>
-                <button
-                  type="button"
-                  className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-                  onClick={() => copyText(cover)}
-                >
-                  Copy
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                  disabled={isRunning}
-                  onClick={() => runOnce("cover", modelCL)}
-                >
-                  {isRunning ? "…" : "Re-run with AI"}
-                </button>
-              </div>
-            </div>
-            <textarea
-              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
-              placeholder="Generated cover letter will appear here…"
-              value={cover}
-              onChange={(e) => setCover(e.target.value)}
-            />
-          </div>
+      {/* Chat (full width, only after first run) */}
+      <div className="mt-4">
+        <ChatPanel
+          visible={hasRun}
+          context={{ jd: jobDesc, cv: userCV, scores, temp, strict }}
+          onApplyToCover={applyMessagesToCover}
+          onApplyToCV={applyMessagesToCV}
+        />
+      </div>
 
-          {/* Tailored CV */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="font-semibold">Tailored CV</div>
-              <div className="flex items-center gap-2">
-                <select
-                  className="rounded-md border p-1 text-sm"
-                  value={modelCV}
-                  onChange={(e) => setModelCV(e.target.value)}
-                  title="Choose AI model"
-                >
-                  <option value="chatgpt">ChatGPT</option>
-                  <option value="gemini">Gemini</option>
-                  <option value="claude">Claude</option>
-                </select>
-                <button
-                  type="button"
-                  className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-                  onClick={() => copyText(tailored)}
-                >
-                  Copy
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                  disabled={isRunning}
-                  onClick={() => runOnce("cv", modelCV)}
-                >
-                  {isRunning ? "…" : "Re-run with AI"}
-                </button>
-              </div>
+      {/* Bottom: Outputs */}
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={classes.card}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={classes.title}>Cover Letter</h3>
+            <div className="flex gap-2">
+              <button className={classes.btnGhost} onClick={() => navigator.clipboard?.writeText(coverLetter)}>Copy</button>
+              <button className={classes.btnGhost} onClick={reRunAI}>Re-run with AI</button>
             </div>
-            <textarea
-              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
-              placeholder="Generated tailored CV will appear here…"
-              value={tailored}
-              onChange={(e) => setTailored(e.target.value)}
-            />
           </div>
+          <textarea className={classes.input + " h-64"} value={coverLetter} onChange={(e) => setCoverLetter(e.target.value)} placeholder="Generated cover letter will appear here…" />
         </div>
+
+        <div className={classes.card}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={classes.title}>Tailored CV</h3>
+            <div className="flex gap-2">
+              <button className={classes.btnGhost} onClick={() => navigator.clipboard?.writeText(tailoredCV)}>Copy</button>
+              <button className={classes.btnGhost} onClick={reRunAI}>Re-run with AI</button>
+            </div>
+          </div>
+          <textarea className={classes.input + " h-64"} value={tailoredCV} onChange={(e) => setTailoredCV(e.target.value)} placeholder="Generated tailored CV will appear here…" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- subcomponents ----------
+function SliderRow({ label, hint, min, max, step, value, onChange }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <label className={classes.label}>{label}</label>
+        <span className="text-xs text-gray-400">{hint}</span>
+      </div>
+      <div className="flex items-center gap-3 mt-1">
+        <input type="range" className="w-full" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} />
+        <div className="min-w-[52px] text-right text-xs tabular-nums text-gray-700">{value.toFixed(2)}</div>
+      </div>
+    </div>
+  );
+}
+
+function GaugeCard({ title, value }) {
+  const ringColor = value >= 75 ? "text-green-600" : value >= 50 ? "text-amber-500" : "text-red-600";
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-gray-200 bg-white p-3">
+      <div className="text-xs text-gray-500 mb-2">{title}</div>
+      <div className={`relative h-20 w-20 rounded-full ${ringColor}`} style={ringStyle(value)} aria-label={`${title} ${value}%`}>
+        <div className="absolute inset-2 rounded-full bg-white flex items-center justify-center">
+          <div className={`text-sm font-semibold ${value >= 75 ? "text-green-700" : value >= 50 ? "text-amber-700" : "text-red-700"}`}>{value}%</div>
+        </div>
+      </div>
+      <div className="w-full mt-3 h-2 rounded-full bg-gray-100">
+        <div className={`h-2 rounded-full ${value >= 75 ? "bg-green-600" : value >= 50 ? "bg-amber-500" : "bg-red-600"}`} style={{ width: `${clamp(value)}%` }} />
       </div>
     </div>
   );
