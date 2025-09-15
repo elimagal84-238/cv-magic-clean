@@ -374,14 +374,22 @@ export default function CVMatcher() {
                   {isRunning ? "…" : "Re-run with AI"}
                 </button>
               </div>
-            </div>
-            <textarea
-              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
-              placeholder="Generated cover letter will appear here…"
-              value={cover}
-              onChange={(e) => setCover(e.target.value)}
-            />
-          </div>
+         <textarea
+  className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
+  placeholder="Paste the job ad here…"
+  value={job}
+  onChange={(e) => setJob(e.target.value)}
+/>
+<div className="mt-2 flex items-center justify-between">
+  <span className="text-xs text-gray-500">Clears on refresh/exit</span>
+  <button
+    className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+    onClick={() => setJob("")}
+  >
+    Clear
+  </button>
+</div>
+
 
           {/* Tailored CV */}
           <div className="bg-white rounded-xl shadow p-4">
