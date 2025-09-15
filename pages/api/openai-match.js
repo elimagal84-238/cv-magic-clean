@@ -1,5 +1,5 @@
 // pages/api/openai-match.js
-// CV-Magic — API v0.4 (single-file, zero-deps)
+// CV-Magic — API v0.5 (single-file, zero-deps, build-safe)
 // POST { job_description, cv_text } -> { scores, rationales }
 
 const SKILLS = [
@@ -21,12 +21,15 @@ function tokenize(t){
   return m?m:[];
 }
 function splitSentences(t){
+  // ללא lookbehind כדי למנוע כשלים בבילד
   return (t||"").replace(/\r/g,"").split(/[.!?]+|\n+/).map(s=>s.trim()).filter(Boolean);
 }
 function extractBulletedRequirements(t){
+  // תיקון REGEX: בלי בריחה ל־• ובלי /u — תואם SWC
+  const bullet = /^\s*(?:[*\-•]|\d+\.)\s+/;
   return (t||"").split(/\n/).map(l=>l.trim())
-    .filter(l=>/^(\*|\-|\•|\d+\.)\s+/u.test(l))
-    .map(l=>l.replace(/^(\*|\-|\•|\d+\.)\s+/u,"").trim());
+    .filter(l=>bullet.test(l))
+    .map(l=>l.replace(bullet,"").trim());
 }
 function extractYears(t){
   const hits=t.match(/\b(\d{1,2})\s*(?:yrs?|years?|שנים)\b/gi)||[];
