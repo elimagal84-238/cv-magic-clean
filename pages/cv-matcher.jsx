@@ -373,23 +373,24 @@ export default function CVMatcher() {
                 >
                   {isRunning ? "…" : "Re-run with AI"}
                 </button>
-              </div>
-         <textarea
-  className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
-  placeholder="Paste the job ad here…"
-  value={job}
-  onChange={(e) => setJob(e.target.value)}
-/>
-<div className="mt-2 flex items-center justify-between">
-  <span className="text-xs text-gray-500">Clears on refresh/exit</span>
-  <button
-    className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-    onClick={() => setJob("")}
-  >
-    Clear
-  </button>
+    <div className="bg-white rounded-xl shadow p-4">
+  <div className="font-semibold mb-2">Job Description</div>
+  <textarea
+    className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
+    placeholder="Paste the job ad here…"
+    value={job}
+    onChange={(e) => setJob(e.target.value)}
+  />
+  <div className="mt-2 flex items-center justify-between">
+    <span className="text-xs text-gray-500">Clears on refresh/exit</span>
+    <button
+      className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+      onClick={() => setJob('')}
+    >
+      Clear
+    </button>
+  </div>
 </div>
-
 
           {/* Tailored CV */}
           <div className="bg-white rounded-xl shadow p-4">
