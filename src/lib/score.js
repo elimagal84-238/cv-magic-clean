@@ -1,7 +1,7 @@
 // src/lib/score.js
-// Scoring + rationales (JS, CommonJS)
-const fs = require("fs");
-const path = require("path");
+// Scoring + rationales — v0.2 (pure ESM)
+import fs from "fs";
+import path from "path";
 
 function loadJSON(fname, fallback) {
   try {
@@ -61,7 +61,7 @@ function experienceScore(jdYears, cvYears) {
   return 35;
 }
 
-function scoreAll(data) {
+export function scoreAll(data) {
   const { jd, cv } = data;
 
   const kw = keywordOverlap(jd.tokens, cv.tokens);
@@ -74,17 +74,13 @@ function scoreAll(data) {
     for (const req of jd.requirements) {
       const ev = sentenceEvidence(req, cv.sentences);
       const reqKw = ev.score;
-      const reqSk = sk; // v0.1 approximation
+      const reqSk = sk; // v0.2 approximation
       const reqEx = ex;
       const agg = 0.5 * reqKw + 0.25 * reqSk + 0.25 * reqEx;
 
       let status = "missing";
-      if (agg >= 70) {
-        status = "met";
-        covered++;
-      } else if (agg >= 40) {
-        status = "partial";
-      }
+      if (agg >= 70) { status = "met"; covered++; }
+      else if (agg >= 40) { status = "partial"; }
 
       rationales.push({
         requirement: req,
@@ -118,8 +114,6 @@ function scoreAll(data) {
       experience: Math.round(clamp(ex)),
       requirements_coverage: Math.round(clamp(reqCov)),
     },
-    rationales: rationales,
+    rationales,
   };
 }
-
-module.exports = { scoreAll };
