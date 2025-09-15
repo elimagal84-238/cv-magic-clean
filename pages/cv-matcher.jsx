@@ -9,15 +9,15 @@ const LS_KEYS = {
 };
 
 const ROLE_PRESETS = {
-  Surgeon: { min: 0.10, max: 0.40, step: 0.05 },
+  Surgeon: { min: 0.1, max: 0.4, step: 0.05 },
   Accountant: { min: 0.15, max: 0.45, step: 0.05 },
-  "Product Manager": { min: 0.30, max: 0.70, step: 0.07 },
-  Copywriter: { min: 0.40, max: 0.90, step: 0.10 },
+  "Product Manager": { min: 0.3, max: 0.7, step: 0.07 },
+  Copywriter: { min: 0.4, max: 0.9, step: 0.1 },
 };
 
 const defaultRole = "Surgeon";
 
-// ---------- small helpers ----------
+// ---------- helpers ----------
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const lerp = (a, b, t) => a + (b - a) * t;
 function computeTemp(slider /*1..9*/, rolePreset, runIndex) {
@@ -32,14 +32,7 @@ function scoreColor(p) {
 }
 
 // ---------- ring gauge ----------
-function RingGauge({
-  label,
-  value = 0,
-  size = 150,
-  stroke = 14,
-  onClick,
-  title,
-}) {
+function RingGauge({ label, value = 0, size = 150, stroke = 14, onClick, title }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Number(value || 0)));
@@ -51,16 +44,10 @@ function RingGauge({
       style={{ width: size, height: size }}
       onClick={onClick}
       title={title}
+      type="button"
     >
       <svg width={size} height={size}>
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          stroke="#e5e7eb"
-          strokeWidth={stroke}
-          fill="none"
-        />
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="#e5e7eb" strokeWidth={stroke} fill="none" />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -86,7 +73,6 @@ async function copyText(txt) {
   try {
     await navigator.clipboard.writeText(txt || "");
   } catch {
-    // fallback
     const ta = document.createElement("textarea");
     ta.value = txt || "";
     document.body.appendChild(ta);
@@ -100,6 +86,7 @@ export default function CVMatcher() {
   // top inputs
   const [job, setJob] = useState("");
   const [cv, setCv] = useState("");
+
   // console scores
   const [scores, setScores] = useState({
     match: 0,
@@ -108,6 +95,7 @@ export default function CVMatcher() {
     experience: 0,
     skills: 0,
   });
+
   // bottom outputs
   const [cover, setCover] = useState("");
   const [tailored, setTailored] = useState("");
@@ -143,10 +131,7 @@ export default function CVMatcher() {
   }, [cv, slider, role, runIndex]);
 
   // temperature for current settings
-  const temp = useMemo(
-    () => computeTemp(slider, ROLE_PRESETS[role], runIndex),
-    [slider, role, runIndex]
-  );
+  const temp = useMemo(() => computeTemp(slider, ROLE_PRESETS[role], runIndex), [slider, role, runIndex]);
 
   // main run
   async function runOnce(target = "all", modelPref = "chatgpt") {
@@ -174,7 +159,6 @@ export default function CVMatcher() {
       const data = await res.json();
       if (data?.error) throw new Error(data.error);
 
-      // update scores + outputs
       if (data.scores) {
         setScores({
           match: data.scores.match_score ?? 0,
@@ -187,7 +171,6 @@ export default function CVMatcher() {
       if (data.tailored_cv) setTailored(data.tailored_cv);
       if (data.cover_letter) setCover(data.cover_letter);
 
-      // advance run index (caps in server via max)
       setRunIndex((x) => x + 1);
     } catch (e) {
       console.error(e);
@@ -203,6 +186,7 @@ export default function CVMatcher() {
       <div className="mx-auto max-w-6xl p-6 space-y-6">
         {/* Top row: Job + CV */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Job Description card (WITH Clear button) */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="font-semibold mb-2">Job Description</div>
             <textarea
@@ -211,11 +195,19 @@ export default function CVMatcher() {
               value={job}
               onChange={(e) => setJob(e.target.value)}
             />
-            <div className="mt-2 text-xs text-gray-500">
-              Clears on refresh/exit
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-gray-500">Clears on refresh/exit</span>
+              <button
+                type="button"
+                className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+                onClick={() => setJob("")}
+              >
+                Clear
+              </button>
             </div>
           </div>
 
+          {/* Your CV card (persists) */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="font-semibold mb-2">Your CV</div>
             <textarea
@@ -227,6 +219,7 @@ export default function CVMatcher() {
             <div className="mt-2 flex items-center justify-between">
               <span className="text-xs text-gray-500">Saved locally</span>
               <button
+                type="button"
                 className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
                 onClick={() => setCv("")}
               >
@@ -258,9 +251,7 @@ export default function CVMatcher() {
               </select>
               <div
                 className="text-sm text-gray-500"
-                title={`min=${ROLE_PRESETS[role].min.toFixed(
-                  2
-                )}, max=${ROLE_PRESETS[role].max.toFixed(
+                title={`min=${ROLE_PRESETS[role].min.toFixed(2)}, max=${ROLE_PRESETS[role].max.toFixed(
                   2
                 )}, step=${ROLE_PRESETS[role].step.toFixed(2)}`}
               >
@@ -328,10 +319,9 @@ export default function CVMatcher() {
                 className="flex-1"
                 aria-label="Creativity"
               />
-              <div className="w-10 text-right text-sm text-gray-600">
-                {slider}
-              </div>
+              <div className="w-10 text-right text-sm text-gray-600">{slider}</div>
               <button
+                type="button"
                 className="px-3 py-1 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                 disabled={isRunning}
                 onClick={() => runOnce("all", "chatgpt")}
@@ -361,36 +351,29 @@ export default function CVMatcher() {
                   <option value="claude">Claude</option>
                 </select>
                 <button
+                  type="button"
                   className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
                   onClick={() => copyText(cover)}
                 >
                   Copy
                 </button>
                 <button
+                  type="button"
                   className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                   disabled={isRunning}
                   onClick={() => runOnce("cover", modelCL)}
                 >
                   {isRunning ? "…" : "Re-run with AI"}
                 </button>
-    <div className="bg-white rounded-xl shadow p-4">
-  <div className="font-semibold mb-2">Job Description</div>
-  <textarea
-    className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
-    placeholder="Paste the job ad here…"
-    value={job}
-    onChange={(e) => setJob(e.target.value)}
-  />
-  <div className="mt-2 flex items-center justify-between">
-    <span className="text-xs text-gray-500">Clears on refresh/exit</span>
-    <button
-      className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
-      onClick={() => setJob('')}
-    >
-      Clear
-    </button>
-  </div>
-</div>
+              </div>
+            </div>
+            <textarea
+              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
+              placeholder="Generated cover letter will appear here…"
+              value={cover}
+              onChange={(e) => setCover(e.target.value)}
+            />
+          </div>
 
           {/* Tailored CV */}
           <div className="bg-white rounded-xl shadow p-4">
@@ -408,12 +391,14 @@ export default function CVMatcher() {
                   <option value="claude">Claude</option>
                 </select>
                 <button
+                  type="button"
                   className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
                   onClick={() => copyText(tailored)}
                 >
                   Copy
                 </button>
                 <button
+                  type="button"
                   className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                   disabled={isRunning}
                   onClick={() => runOnce("cv", modelCV)}
