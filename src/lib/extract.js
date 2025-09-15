@@ -1,9 +1,12 @@
 // src/lib/extract.js
-// Lightweight structured extraction (JS, CommonJS)
+// Lightweight structured extraction — v0.2 (pure ESM)
+import fs from "fs";
+import path from "path";
+
 const HEB_ENG_WORD = /[A-Za-z\u0590-\u05FF][A-Za-z\u0590-\u05FF0-9+\-/#.]*/g;
 const SENT_SPLIT = /(?<=\.|\?|!|:|\n)\s+/g;
 
-function tokenize(t) {
+export function tokenize(t) {
   const m = (t || "")
     .toLowerCase()
     .replace(/[^A-Za-z0-9\u0590-\u05FF+\-/#.\s]/g, " ")
@@ -31,13 +34,10 @@ function extractTitles(t) {
   return Array.from(new Set(hits.map((s) => s.toLowerCase())));
 }
 
-const fs = require("fs");
-const path = require("path");
 function loadSkillsTaxonomy() {
-  const p = path.join(process.cwd(), "src", "lib", "skills-taxonomy.json");
   try {
-    const s = fs.readFileSync(p, "utf8");
-    return JSON.parse(s);
+    const p = path.join(process.cwd(), "src", "lib", "skills-taxonomy.json");
+    return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch {
     return [];
   }
@@ -54,7 +54,7 @@ function extractSkillsByTaxonomy(tokens) {
   return Array.from(new Set(out));
 }
 
-function extractAll(jd, cv) {
+export function extractAll(jd, cv) {
   const jdTokens = tokenize(jd);
   const cvTokens = tokenize(cv);
   return {
@@ -74,5 +74,3 @@ function extractAll(jd, cv) {
     },
   };
 }
-
-module.exports = { extractAll, tokenize };
