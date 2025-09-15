@@ -1,9 +1,11 @@
 // pages/api/match.js
-// CV-Magic Match API — v0.1 (JS, CommonJS)
-const { extractAll } = require("../../src/lib/extract");
-const { scoreAll } = require("../../src/lib/score");
+// CV-Magic Match API — v0.2 (ESM + Node runtime)
+import { extractAll } from "../../src/lib/extract.js";
+import { scoreAll } from "../../src/lib/score.js";
 
-module.exports = async function handler(req, res) {
+export const config = { runtime: "nodejs" };
+
+export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
@@ -20,4 +22,4 @@ module.exports = async function handler(req, res) {
     console.error(e);
     return res.status(500).json({ error: "server_error" });
   }
-};
+}
