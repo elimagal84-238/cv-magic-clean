@@ -1,223 +1,427 @@
-import React, { useMemo, useState } from "react";
-import { runMatch, runDoubleCheck } from "../lib/core";
+// pages/cv-matcher.jsx
+import { useEffect, useMemo, useState } from "react";
 
-const MODELS = [
-  { id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
-  { id: "gpt-4o-mini", label: "GPT-4o mini" },
-];
+const LS_KEYS = {
+  cv: "cvMagic.cvText",
+  slider: "cvMagic.creativitySlider",
+  role: "cvMagic.rolePreset",
+  runIdx: "cvMagic.runIndex",
+};
 
-// ===== Rings =====
-function Ring({ value = 0, size = 120, stroke = 10, label }) {
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const v = Math.max(0, Math.min(100, Number(value) || 0));
-  const offset = circumference * (1 - v / 100);
-  const color = v >= 85 ? "#22c55e" : v >= 60 ? "#f59e0b" : "#ef4444";
+const ROLE_PRESETS = {
+  Surgeon: { min: 0.10, max: 0.40, step: 0.05 },
+  Accountant: { min: 0.15, max: 0.45, step: 0.05 },
+  "Product Manager": { min: 0.30, max: 0.70, step: 0.07 },
+  Copywriter: { min: 0.40, max: 0.90, step: 0.10 },
+};
+
+const defaultRole = "Surgeon";
+
+// ---------- small helpers ----------
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+function computeTemp(slider /*1..9*/, rolePreset, runIndex) {
+  const base01 = (Number(slider) - 1) / 8; // 0..1
+  const tBase = lerp(rolePreset.min, rolePreset.max, clamp01(base01));
+  return Math.min(rolePreset.max, tBase + (runIndex || 0) * rolePreset.step);
+}
+function scoreColor(p) {
+  if (p < 50) return "#ef4444"; // red-500
+  if (p < 75) return "#f59e0b"; // amber-500
+  return "#22c55e"; // green-500
+}
+
+// ---------- ring gauge ----------
+function RingGauge({
+  label,
+  value = 0,
+  size = 150,
+  stroke = 14,
+  onClick,
+  title,
+}) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  const dash = (pct / 100) * c;
+  const color = scoreColor(pct);
   return (
-    <div className="flex flex-col items-center justify-center">
-      <svg width={size} height={size} className="block">
-        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#e5e7eb" strokeWidth={stroke} fill="none" />
-        <circle cx={size / 2} cy={size / 2} r={radius} stroke={color} strokeWidth={stroke} fill="none"
-          strokeLinecap="round" strokeDasharray={`${circumference} ${circumference}`} strokeDashoffset={offset}
-          style={{ transition: "stroke-dashoffset 600ms ease" }} />
-        <text x="50%" y="50%" dominantBaseline="middle" textAnchor="middle" className="font-semibold"
-          style={{ fontSize: size * 0.26 }} fill="#0f172a">{Math.round(v)}</text>
+    <button
+      className="relative inline-flex items-center justify-center"
+      style={{ width: size, height: size }}
+      onClick={onClick}
+      title={title}
+    >
+      <svg width={size} height={size}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="#e5e7eb"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke={color}
+          strokeWidth={stroke}
+          fill="none"
+          strokeDasharray={`${dash} ${c - dash}`}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
       </svg>
-      {label && <div className="mt-1 text-sm font-medium text-gray-800">{label}</div>}
-    </div>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <div className="text-2xl font-semibold">{pct}%</div>
+        <div className="text-xs text-gray-600">{label}</div>
+      </div>
+    </button>
   );
 }
-function SmallRing({ value, label }) {
-  return (
-    <div className="flex flex-col items-center">
-      <Ring value={value} size={78} stroke={8} />
-      <div className="mt-1 text-xs text-gray-600">{label}</div>
-    </div>
-  );
+
+// ---------- copy helper ----------
+async function copyText(txt) {
+  try {
+    await navigator.clipboard.writeText(txt || "");
+  } catch {
+    // fallback
+    const ta = document.createElement("textarea");
+    ta.value = txt || "";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
 }
 
 export default function CVMatcher() {
-  // Inputs
-  const [jobText, setJobText] = useState("");
-  const [cvText, setCvText] = useState("");
+  // top inputs
+  const [job, setJob] = useState("");
+  const [cv, setCv] = useState("");
+  // console scores
+  const [scores, setScores] = useState({
+    match: 0,
+    keywords: 0,
+    reqcov: 0,
+    experience: 0,
+    skills: 0,
+  });
+  // bottom outputs
+  const [cover, setCover] = useState("");
+  const [tailored, setTailored] = useState("");
 
-  // Controls
-  const [model, setModel] = useState(MODELS[0].id);
-  const [volume, setVolume] = useState(5);   // 1..9
-  const temperature = 0.5;                   // fixed, hidden
+  // controls
+  const [slider, setSlider] = useState(3); // 1..9
+  const [role, setRole] = useState(defaultRole);
+  const [runIndex, setRunIndex] = useState(0);
+  const [modelCL, setModelCL] = useState("chatgpt");
+  const [modelCV, setModelCV] = useState("chatgpt");
+  const [isRunning, setIsRunning] = useState(false);
 
-  // Outputs
-  const [score, setScore] = useState(0);
-  const [subscores, setSubscores] = useState({ skills: 0, experience: 0, keywords: 0 });
-  const [strengths, setStrengths] = useState([]);
-  const [gaps, setGaps] = useState([]);
-  const [recs, setRecs] = useState([]);
-  const [adjustedCV, setAdjustedCV] = useState("");
-  const [coverLetter, setCoverLetter] = useState("");
-  const [runs, setRuns] = useState(0);
-  const [loading, setLoading] = useState(false);
-
-  const scoreLabel = useMemo(() => {
-    if (score >= 85) return "התאמה מצוינת";
-    if (score >= 60) return "התאמה טובה";
-    if (score > 0)  return "התאמה נמוכה";
-    return "";
-  }, [score]);
-
-  async function onRun() {
-    setLoading(true);
+  // persistence: CV, slider, role, runIndex
+  useEffect(() => {
     try {
-      const res = await runMatch({ jobText, cvText, model, volume, temperature });
-      setScore(res.score);
-      setSubscores(res.subscores);
-      setStrengths(res.strengths);
-      setGaps(res.gaps);
-      setRecs(res.recommendations);
-      setAdjustedCV(res.adjustedCV);
-      setCoverLetter(res.coverLetter);
-      setRuns((r) => r + 1);
+      const cv0 = localStorage.getItem(LS_KEYS.cv);
+      const s0 = localStorage.getItem(LS_KEYS.slider);
+      const r0 = localStorage.getItem(LS_KEYS.role);
+      const i0 = localStorage.getItem(LS_KEYS.runIdx);
+      if (cv0) setCv(cv0);
+      if (s0) setSlider(Number(s0));
+      if (r0 && ROLE_PRESETS[r0]) setRole(r0);
+      if (i0) setRunIndex(Number(i0));
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEYS.cv, cv || "");
+      localStorage.setItem(LS_KEYS.slider, String(slider));
+      localStorage.setItem(LS_KEYS.role, role);
+      localStorage.setItem(LS_KEYS.runIdx, String(runIndex));
+    } catch {}
+  }, [cv, slider, role, runIndex]);
+
+  // temperature for current settings
+  const temp = useMemo(
+    () => computeTemp(slider, ROLE_PRESETS[role], runIndex),
+    [slider, role, runIndex]
+  );
+
+  // main run
+  async function runOnce(target = "all", modelPref = "chatgpt") {
+    if (!job || !cv) {
+      alert("Paste both Job Description and Your CV.");
+      return;
+    }
+    setIsRunning(true);
+    try {
+      const body = {
+        job_description: job,
+        cv_text: cv,
+        role_preset: ROLE_PRESETS[role],
+        slider: Number(slider),
+        run_index: Number(runIndex),
+        temperature: temp,
+        model_pref: modelPref, // "chatgpt" | "gemini" | "claude"
+        target, // "all" | "cover" | "cv"
+      };
+      const res = await fetch("/api/openai-match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data?.error) throw new Error(data.error);
+
+      // update scores + outputs
+      if (data.scores) {
+        setScores({
+          match: data.scores.match_score ?? 0,
+          keywords: data.scores.keywords ?? 0,
+          reqcov: data.scores.requirements_coverage ?? 0,
+          experience: data.scores.experience ?? 0,
+          skills: data.scores.skills ?? 0,
+        });
+      }
+      if (data.tailored_cv) setTailored(data.tailored_cv);
+      if (data.cover_letter) setCover(data.cover_letter);
+
+      // advance run index (caps in server via max)
+      setRunIndex((x) => x + 1);
     } catch (e) {
-      alert(e?.message || "שגיאה בהרצה");
+      console.error(e);
+      alert("Run failed. See console.");
     } finally {
-      setLoading(false);
+      setIsRunning(false);
     }
   }
 
-  async function onDoubleCheck() {
-    if (!adjustedCV) return;
-    setLoading(true);
-    try {
-      const res = await runDoubleCheck({ jobText, lastAdjustedCv: adjustedCV, model, temperature });
-      setScore(res.score);
-      setSubscores(res.subscores);
-      setAdjustedCV(res.adjustedCV);
-    } catch (e) {
-      alert(e?.message || "שגיאה בבדיקת Double-Check");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function copy(text) {
-    if (text) navigator.clipboard.writeText(text);
-  }
-
+  // UI
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
-      {/* Headings */}
-      <header className="text-center space-y-1">
-        <h1 className="text-3xl font-bold">CV-Magic</h1>
-        <p className="text-sm text-gray-600">
-          קורות חיים מותאמים בשנייה - שליחת קורות חיים מותאמים עושה את החיים של כולנו קלים
-        </p>
-      </header>
-
-      {/* Inputs */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-base font-medium text-center mb-2">דרישות המשרה</h2>
-          <textarea dir="auto" value={jobText} onChange={(e) => setJobText(e.target.value)}
-            placeholder="הדבק כאן את מודעת הדרושים"
-            className="w-full h-48 resize-y rounded-xl border border-gray-200 p-3 focus:outline-none focus:ring-2 focus:ring-gray-300" />
-        </div>
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-base font-medium text-center mb-2">קורות החיים שלך</h2>
-          <textarea dir="auto" value={cvText} onChange={(e) => setCvText(e.target.value)}
-            placeholder="הדבק כאן את קו״ח שלך"
-            className="w-full h-48 resize-y rounded-xl border border-gray-200 p-3 focus:outline-none focus:ring-2 focus:ring-gray-300" />
-        </div>
-      </section>
-
-      {/* Console + Actions */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-        <div className="bg-white rounded-2xl shadow-sm p-6 col-span-1 lg:col-span-2">
-          <h3 className="text-lg font-medium mb-4 text-center">ציון התאמה</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            <div className="md:col-span-1 flex justify-center">
-              <Ring value={score} size={160} stroke={12} label={scoreLabel} />
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <div className="mx-auto max-w-6xl p-6 space-y-6">
+        {/* Top row: Job + CV */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="font-semibold mb-2">Job Description</div>
+            <textarea
+              className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
+              placeholder="Paste the job ad here…"
+              value={job}
+              onChange={(e) => setJob(e.target.value)}
+            />
+            <div className="mt-2 text-xs text-gray-500">
+              Clears on refresh/exit
             </div>
-            <div className="md:col-span-2">
-              <div className="grid grid-cols-3 gap-6">
-                <SmallRing value={subscores.skills} label="כישורים" />
-                <SmallRing value={subscores.experience} label="ניסיון" />
-                <SmallRing value={subscores.keywords} label="מילות מפתח" />
-              </div>
-              <details className="mt-6 group">
-                <summary className="cursor-pointer list-none select-none flex items-center gap-2 text-sm font-medium text-gray-800">
-                  <span>הערות והארות נוספות</span>
-                  <svg className="h-4 w-4 transition-transform group-open:rotate-180" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.585l3.71-3.354a.75.75 0 011.04 1.08l-4.24 3.83a.75.75 0 01-1.04 0l-4.24-3.83a.75.75 0 01.02-1.06z" clipRule="evenodd"/>
-                  </svg>
-                </summary>
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
-                    <div className="font-semibold mb-2">חוזקות</div>
-                    {strengths?.length ? strengths.map((s, i) => <li key={i} className="list-disc ml-5">{s}</li>) : <li className="text-gray-500">—</li>}
-                  </ul>
-                  <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
-                    <div className="font-semibold mb-2">פערים</div>
-                    {gaps?.length ? gaps.map((s, i) => <li key={i} className="list-disc ml-5">{s}</li>) : <li className="text-gray-500">—</li>}
-                  </ul>
-                  <ul className="bg-gray-50 rounded-xl p-3 text-sm leading-6">
-                    <div className="font-semibold mb-2">המלצות</div>
-                    {recs?.length ? recs.map((s, i) => <li key={i} className="list-disc ml-5">{s}</li>) : <li className="text-gray-500">—</li>}
-                  </ul>
-                </div>
-              </details>
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="font-semibold mb-2">Your CV</div>
+            <textarea
+              className="w-full h-48 resize-vertical rounded-md border border-gray-300 p-2 outline-none focus:ring"
+              placeholder="Paste your CV here… (persists locally)"
+              value={cv}
+              onChange={(e) => setCv(e.target.value)}
+            />
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-gray-500">Saved locally</span>
+              <button
+                className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+                onClick={() => setCv("")}
+              >
+                Clear
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm p-6 space-y-4">
-          <h3 className="text-lg font-medium text-center">הפק קורות חיים מותאמים</h3>
-          <div className="space-y-3">
-            <label className="block text-sm text-gray-700">מודל AI</label>
-            <select value={model} onChange={(e) => setModel(e.target.value)}
-              className="w-full rounded-xl border border-gray-200 p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-300">
-              {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-            </select>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-gray-700">דרגת חופש</label>
-              <span className="text-xs text-gray-500">{volume} / 9</span>
-            </div>
-            <div className="px-1">
-              <input type="range" min={1} max={9} step={1} value={volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                className="w-full accent-black" />
-              <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-                {Array.from({ length: 9 }).map((_, i) => <span key={i}>{i + 1}</span>)}
+        {/* Middle: ATS console */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="text-lg font-semibold">ATS Console</div>
+            <div className="ml-auto flex items-center gap-2">
+              <label className="text-sm text-gray-600">Role Strictness</label>
+              <select
+                className="rounded-md border p-1 text-sm"
+                value={role}
+                onChange={(e) => {
+                  setRole(e.target.value);
+                  setRunIndex(0);
+                }}
+              >
+                {Object.keys(ROLE_PRESETS).map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+              <div
+                className="text-sm text-gray-500"
+                title={`min=${ROLE_PRESETS[role].min.toFixed(
+                  2
+                )}, max=${ROLE_PRESETS[role].max.toFixed(
+                  2
+                )}, step=${ROLE_PRESETS[role].step.toFixed(2)}`}
+              >
+                temp ≈ {temp.toFixed(2)}
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 pt-2">
-            <button onClick={onRun} disabled={loading}
-              className="rounded-xl px-4 py-2 bg-black text-white text-sm font-medium disabled:opacity-60">הרצה (ניתוח + טיוב)</button>
-            <button onClick={onDoubleCheck} disabled={loading || !adjustedCV}
-              className="rounded-xl px-4 py-2 border border-gray-300 text-sm font-medium hover:bg-gray-50 disabled:opacity-50">Double-Check</button>
-          </div>
-          <div className="text-xs text-gray-500">Runs: {runs}</div>
-        </div>
-      </section>
 
-      {/* Outputs */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-base font-medium">מכתב מקדים</h3>
-            <button onClick={() => copy(coverLetter)} className="text-xs underline">העתק</button>
+          <div className="grid grid-cols-5 gap-4 items-center justify-items-center">
+            {/* left */}
+            <RingGauge
+              label="Keywords"
+              value={scores.keywords}
+              size={120}
+              title="Alignment with job ad terminology"
+              onClick={() => alert("Keywords tips…")}
+            />
+            <RingGauge
+              label="Requirements Coverage"
+              value={scores.reqcov}
+              size={120}
+              title="Coverage of must-have vs nice-to-have"
+              onClick={() => alert("Requirements tips…")}
+            />
+
+            {/* center */}
+            <RingGauge
+              label="Match Score"
+              value={scores.match}
+              size={180}
+              title="Overall fit for the job (click to re-run)"
+              onClick={() => runOnce("all", "chatgpt")}
+            />
+
+            {/* right */}
+            <RingGauge
+              label="Experience"
+              value={scores.experience}
+              size={120}
+              title="Years and recency match"
+              onClick={() => alert("Experience tips…")}
+            />
+            <RingGauge
+              label="Skills"
+              value={scores.skills}
+              size={120}
+              title="Percentage of required skills present"
+              onClick={() => alert("Skills tips…")}
+            />
           </div>
-          <pre dir="auto" className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{coverLetter || "—"}</pre>
-        </div>
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-base font-medium">קורות חיים מותאמים</h3>
-            <button onClick={() => copy(adjustedCV)} className="text-xs underline">העתק</button>
+
+          {/* Slider */}
+          <div className="mt-6">
+            <div className="flex items-center gap-3">
+              <div className="text-sm font-medium">Creativity</div>
+              <input
+                type="range"
+                min={1}
+                max={9}
+                value={slider}
+                onChange={(e) => {
+                  setSlider(Number(e.target.value));
+                  setRunIndex(0);
+                }}
+                className="flex-1"
+                aria-label="Creativity"
+              />
+              <div className="w-10 text-right text-sm text-gray-600">
+                {slider}
+              </div>
+              <button
+                className="px-3 py-1 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                disabled={isRunning}
+                onClick={() => runOnce("all", "chatgpt")}
+                title="Re-run all (center ring action)"
+              >
+                {isRunning ? "Running…" : "Run"}
+              </button>
+            </div>
           </div>
-          <pre dir="auto" className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{adjustedCV || "—"}</pre>
         </div>
-      </section>
+
+        {/* Bottom row: outputs */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Cover Letter */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-semibold">Cover Letter</div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="rounded-md border p-1 text-sm"
+                  value={modelCL}
+                  onChange={(e) => setModelCL(e.target.value)}
+                  title="Choose AI model"
+                >
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="claude">Claude</option>
+                </select>
+                <button
+                  className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+                  onClick={() => copyText(cover)}
+                >
+                  Copy
+                </button>
+                <button
+                  className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={isRunning}
+                  onClick={() => runOnce("cover", modelCL)}
+                >
+                  {isRunning ? "…" : "Re-run with AI"}
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
+              placeholder="Generated cover letter will appear here…"
+              value={cover}
+              onChange={(e) => setCover(e.target.value)}
+            />
+          </div>
+
+          {/* Tailored CV */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-semibold">Tailored CV</div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="rounded-md border p-1 text-sm"
+                  value={modelCV}
+                  onChange={(e) => setModelCV(e.target.value)}
+                  title="Choose AI model"
+                >
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="claude">Claude</option>
+                </select>
+                <button
+                  className="px-3 py-1 text-sm rounded-md border bg-gray-50 hover:bg-gray-100"
+                  onClick={() => copyText(tailored)}
+                >
+                  Copy
+                </button>
+                <button
+                  className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={isRunning}
+                  onClick={() => runOnce("cv", modelCV)}
+                >
+                  {isRunning ? "…" : "Re-run with AI"}
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="w-full h-44 rounded-md border border-gray-300 p-2 resize-vertical"
+              placeholder="Generated tailored CV will appear here…"
+              value={tailored}
+              onChange={(e) => setTailored(e.target.value)}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
