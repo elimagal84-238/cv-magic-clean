@@ -1,163 +1,336 @@
 // pages/cv-matcher.jsx
-// Layout in the spirit of the older build (JD ⟵ | ⟶ CV), gauges row, chat at bottom-right.
-// Uses the new hybrid /api/openai-match.
+import { useEffect, useMemo, useState } from "react";
 
-import React, { useEffect, useRef, useState } from "react";
-
-const K = { CV: "cvMagic_userCV_v1" };
-const ui = {
-  container: "container mx-auto p-4 md:p-6",
-  grid: "grid grid-cols-1 xl:grid-cols-2 gap-4",
-  card: "rounded-xl shadow border bg-white p-4",
-  title: "font-semibold text-gray-800",
-  input: "w-full rounded-lg border px-3 py-2 text-sm",
-  btn: "rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-60",
-  btnGhost: "rounded-lg border px-3 py-2 text-sm",
+const LS_KEYS = {
+  cv: "cvMagic.cvText",
+  slider: "cvMagic.creativitySlider",
+  role: "cvMagic.rolePreset",
+  runIdx: "cvMagic.runIndex",
 };
-const clamp = (n,a=0,b=100)=>Math.max(a,Math.min(b,n));
 
-function Gauge({ title, value }) {
+const ROLE_PRESETS = {
+  Surgeon: { min: 0.1, max: 0.4, step: 0.05 },
+  Accountant: { min: 0.15, max: 0.45, step: 0.05 },
+  "Product Manager": { min: 0.3, max: 0.7, step: 0.07 },
+  Copywriter: { min: 0.4, max: 0.9, step: 0.1 },
+};
+
+function clamp01(x) {
+  return Math.max(0, Math.min(1, Number(x || 0)));
+}
+function clamp100(x) {
+  return Math.max(0, Math.min(100, Math.round(Number(x || 0))));
+}
+function scoreColor(pct) {
+  const v = clamp100(pct);
+  if (v >= 67) return "text-green-600";
+  if (v >= 34) return "text-yellow-600";
+  return "text-red-600";
+}
+function classNames(...xs) {
+  return xs.filter(Boolean).join(" ");
+}
+function saveLS(k, v) {
+  try {
+    localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
+  } catch {}
+}
+function loadLS(k, defv) {
+  try {
+    const s = localStorage.getItem(k);
+    if (!s) return defv;
+    if (s.startsWith("{") || s.startsWith("[")) return JSON.parse(s);
+    return s;
+  } catch {
+    return defv;
+  }
+}
+
+// ---------- ring gauge ----------
+function RingGauge({ label, value = 0, size = 150, stroke = 14, onClick, title }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  const dash = (pct / 100) * c;
+  const color = scoreColor(pct);
   return (
-    <div className={ui.card}>
-      <div className="flex items-center justify-between mb-2">
-        <span className={ui.title}>{title}</span>
-        <span className="text-sm text-gray-500">{clamp(value)}%</span>
+    <button
+      className="relative inline-flex items-center justify-center"
+      style={{ width: size, height: size }}
+      onClick={onClick}
+      title={title || label}
+    >
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="#eee"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="currentColor"
+          strokeWidth={stroke}
+          fill="none"
+          className={color}
+          strokeDasharray={`${dash} ${c - dash}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <div className="font-semibold text-sm">{label}</div>
+        <div className={classNames("text-xl font-semibold", color)}>{pct}%</div>
       </div>
-      <div className="h-2 rounded bg-gray-100 overflow-hidden">
-        <div className="h-2 bg-gray-800" style={{ width: `${clamp(value)}%` }} />
-      </div>
-    </div>
+    </button>
   );
 }
 
-function tipsFromScores(s) {
-  const out=[];
-  if (s.skills<40) out.push("הוסף אזכורים ישירים למיומנויות/כלים מהמודעה.");
-  if (s.requirements<50) out.push("כסה דרישות ספציפיות במשפטים קצרים וברורים.");
-  if (s.keywords<35) out.push("שלב מילות מפתח בניסוח טבעי לאורך הסיכום והניסיון.");
-  if (s.experience<55) out.push("ציין שנות ניסיון מספרית (לדוגמה: '5 שנות ניסיון').");
-  return out.length?out:["התאמה טובה—חדד הישגים כמותיים והצלחות מדידות."];
-}
+export default function CVMatcher() {
+  const [jd, setJD] = useState("");
+  const [cv, setCV] = useState("");
+  const [rolePreset, setRolePreset] = useState(loadLS(LS_KEYS.role, ROLE_PRESETS["Product Manager"]));
+  const [slider, setSlider] = useState(Number(loadLS(LS_KEYS.slider, 5)) || 5);
+  const [runIdx, setRunIdx] = useState(Number(loadLS(LS_KEYS.runIdx, 0)) || 0);
+  const [model, setModel] = useState("chatgpt");
+  const [target, setTarget] = useState("all");
 
-function Chat({ visible, ctx, applyCV, applyCover }) {
-  const [msgs,setMsgs]=useState([]); const [txt,setTxt]=useState(""); const box=useRef(null);
-  useEffect(()=>{ if(!visible||msgs.length) return; const seed=tipsFromScores(ctx);
-    setMsgs([{role:"assistant",text:`תובנות מה-ATS:\n${seed.map(s=>`• ${s}`).join('\n')}\nאיך להתקדם — קורות חיים או מכתב?`}]); },[visible]); // eslint-disable-line
-  useEffect(()=>{ if(box.current) box.current.scrollTop=box.current.scrollHeight; },[msgs]);
-  const send=()=>{ const m=txt.trim(); if(!m) return;
-    setMsgs(v=>[...v,{role:"user",text:m},{role:"assistant",text:"קיבלתי. הוסיפו דוגמה כמותית שמוכיחה את המיומנות הנדרשת."}]); setTxt(""); };
-  if(!visible) return null;
-  return (
-    <div className={ui.card}>
-      <div className="flex items-center justify-between mb-2">
-        <h3 className={ui.title}>Live Assistant</h3>
-        <div className="flex gap-2">
-          <button className={ui.btnGhost} onClick={()=>applyCover(msgs)}>Apply to Cover Letter</button>
-          <button className={ui.btnGhost} onClick={()=>applyCV(msgs)}>Apply to Tailored CV</button>
-        </div>
-      </div>
-      <div ref={box} className="border rounded-lg p-3 h-48 overflow-auto">
-        {msgs.map((m,i)=>(
-          <div key={i} className={`mb-2 ${m.role==='user'?'text-right':''}`}>
-            <div className="inline-block px-3 py-2 rounded-lg bg-gray-50">
-              <pre className="whitespace-pre-wrap break-words text-sm">{m.text}</pre>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="mt-2 flex gap-2">
-        <input className={ui.input} placeholder="כתוב הודעה…" value={txt} onChange={e=>setTxt(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} />
-        <button className={ui.btn} onClick={send}>Send</button>
-      </div>
-    </div>
-  );
-}
+  const [scores, setScores] = useState({
+    match: 0,
+    keywords: 0,
+    requirements: 0,
+    experience: 0,
+    skills: 0,
+  });
 
-export default function CVMatcher(){
-  const [jd,setJD]=useState(""); const [cv,setCV]=useState("");
-  const [scores,setScores]=useState({match:0,skills:0,experience:0,keywords:0,requirements:0});
-  const [cover,setCover]=useState(""); const [tailored,setTailored]=useState("");
-  const [running,setRunning]=useState(false); const [hasRun,setHasRun]=useState(false);
+  const [cover, setCover] = useState("");
+  const [tailored, setTailored] = useState("");
 
-  useEffect(()=>{ try{ const s=localStorage.getItem(K.CV); if(s && !cv) setCV(s); }catch{} },[]);
-  useEffect(()=>{ try{ localStorage.setItem(K.CV,cv||""); }catch{} },[cv]);
+  useEffect(() => {
+    const s = String(loadLS(LS_KEYS.cv, "") || "");
+    if (s && !cv) setCV(s);
+  }, []);
+  useEffect(() => {
+    saveLS(LS_KEYS.cv, String(cv || ""));
+  }, [cv]);
 
-  async function run(){
-    setRunning(true);
-    try{
-      const res=await fetch("/api/openai-match",{method:"POST",headers:{'content-type':'application/json'},body:JSON.stringify({job_description:jd,cv_text:cv})});
-      const d=await res.json();
-      const k=+d.keywords_match||0, s=+d.skills_match||0, e=+d.experience_match||0, r=+d.requirements_match||0, m=+d.match_score||Math.round(k*0.25+s*0.3+r*0.25+e*0.2);
-      setScores({match:m,skills:s,experience:e,keywords:k,requirements:r});
-      const who=(cv.split(/\n/)[0]||"Candidate").trim();
-      setCover(`${who}\n\nDear Hiring Team,\nI'm excited to apply. Based on my background, I estimate a fit of ~${m}%.\nBest regards,\n${who}`);
-      setTailored(`TARGETED SUMMARY\n• Focus areas: ${jd.slice(0,120)}...\n\nEXPERIENCE & SKILLS (Tailored)\n${cv}`);
-      setHasRun(true);
-    }catch{ setScores({match:0,skills:0,experience:0,keywords:0,requirements:0}); }
-    finally{ setRunning(false); }
+  async function run() {
+    const body = {
+      job_description: jd,
+      cv_text: cv,
+      role_preset: rolePreset,
+      slider,
+      run_index: runIdx,
+      model_pref: model,
+      target,
+    };
+    const resp = await fetch("/api/openai-match", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      alert("Error: " + (await resp.text()));
+      return;
+    }
+    const j = await resp.json();
+
+    setScores({
+      match: clamp100(j.match_score),
+      keywords: clamp100(j.keywords_match),
+      requirements: clamp100(j.requirements_match),
+      experience: clamp100(j.experience_match),
+      skills: clamp100(j.skills_match),
+    });
+
+    setCover(String(j.cover_letter || ""));
+    setTailored(String(j.tailored_cv || ""));
+
+    setRunIdx((x) => {
+      const n = (Number(x || 0) + 1) % 99999;
+      saveLS(LS_KEYS.runIdx, n);
+      return n;
+    });
   }
 
-  const applyCover=(msgs)=>{ const last=msgs.filter(m=>m.role==='assistant').slice(-1)[0]?.text||""; if(last) setCover(t=>`${t}\n\n---\nAssistant suggestions:\n${last}`); };
-  const applyCV=(msgs)=>{ const last=msgs.filter(m=>m.role==='assistant').slice(-1)[0]?.text||""; if(last) setTailored(t=>`${t}\n\n---\nAssistant suggestions:\n${last}`); };
+  const slots = useMemo(() => {
+    const res = [];
+    const A = jd.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    const B = cv.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    const m = Math.max(A.length, B.length);
+    for (let i = 0; i < m; i++) {
+      res.push({ left: A[i] || "", right: B[i] || "" });
+    }
+    return res;
+  }, [jd, cv]);
 
   return (
-    <div className={ui.container}>
-      {/* Top: JD | CV */}
-      <div className={ui.grid}>
-        <div className={ui.card}>
+    <div className="container mx-auto p-4 md:p-6">
+      {/* top inputs */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className={ui.title}>Job Description</h3>
-            <button className={ui.btnGhost} onClick={()=>setJD("")}>Clear</button>
+            <h3 className="font-semibold text-gray-800">Job Description</h3>
+            <button className="rounded-lg border px-3 py-2 text-sm" onClick={() => setJD("")}>Clear</button>
           </div>
-          <textarea className={ui.input+" h-48"} placeholder="הדבק כאן את מודעת הדרושים…" value={jd} onChange={e=>setJD(e.target.value)} />
+          <textarea
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+            placeholder="Paste the job ad here…"
+            value={jd}
+            onChange={(e) => setJD(e.target.value)}
+          />
           <p className="mt-2 text-xs text-gray-500">* Clears on refresh/exit.</p>
         </div>
-        <div className={ui.card}>
+        <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className={ui.title}>Your CV</h3>
-            <button className={ui.btnGhost} onClick={()=>setCV("")}>Clear</button>
+            <h3 className="font-semibold text-gray-800">Your CV</h3>
+            <button className="rounded-lg border px-3 py-2 text-sm" onClick={() => setCV("")}>Clear</button>
           </div>
-          <textarea className={ui.input+" h-48"} placeholder="הדבק כאן את קו״ח (נשמר מקומית)" value={cv} onChange={e=>setCV(e.target.value)} />
+          <textarea
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+            placeholder="Paste your CV text here… (saved locally)"
+            value={cv}
+            onChange={(e) => setCV(e.target.value)}
+          />
           <p className="mt-2 text-xs text-gray-500">* Saved locally (localStorage).</p>
         </div>
       </div>
 
-      {/* Gauges row */}
+      {/* gauges */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
-        <Gauge title="Keywords" value={scores.keywords} />
-        <Gauge title="Requirements Coverage" value={scores.requirements} />
-        <Gauge title="Match Score" value={scores.match} />
-        <Gauge title="Experience" value={scores.experience} />
-        <Gauge title="Skills" value={scores.skills} />
+        <RingGauge label="Keywords" value={scores.keywords} />
+        <RingGauge label="Requirements" value={scores.requirements} title="Requirements Coverage" />
+        <RingGauge label="Match" value={scores.match} title="Match Score" />
+        <RingGauge label="Experience" value={scores.experience} />
+        <RingGauge label="Skills" value={scores.skills} />
       </div>
 
-      {/* Controls + Chat side-by-side */}
+      {/* controls */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className={ui.card}>
-          <div className="flex items-center justify-between">
-            <div className={ui.title}>Controls</div>
-            <button className={ui.btn} onClick={run} disabled={running}>{running?"Running…":"Run"}</button>
+        <div className="rounded-xl shadow border bg-white p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-semibold text-gray-800">Controls</div>
+            <button className="rounded-lg bg-black text-white px-4 py-2 text-sm" onClick={run}>Run</button>
           </div>
-          <p className="text-xs text-gray-500 mt-2">Server scoring via /api/openai-match (Hybrid LLM + HE/EN heuristics).</p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Role Preset</div>
+              <select
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                value={JSON.stringify(rolePreset)}
+                onChange={(e) => {
+                  const v = JSON.parse(e.target.value);
+                  setRolePreset(v);
+                  saveLS(LS_KEYS.role, v);
+                }}
+              >
+                {Object.entries(ROLE_PRESETS).map(([name, v]) => (
+                  <option key={name} value={JSON.stringify(v)}>{name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Min: {rolePreset.min} | Max: {rolePreset.max} | Step: {rolePreset.step}
+              </p>
+            </div>
+
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Creativity (1..9)</div>
+              <input
+                type="range"
+                min={1}
+                max={9}
+                step={1}
+                className="w-full"
+                value={slider}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setSlider(v);
+                  saveLS(LS_KEYS.slider, v);
+                }}
+              />
+              <div className="text-xs text-gray-500 mt-1">Value: {slider}</div>
+            </div>
+
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Model</div>
+              <select
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                <option value="chatgpt">ChatGPT (OpenAI)</option>
+                <option value="gemini">Gemini (Google)</option>
+                <option value="claude">Claude (Anthropic)</option>
+              </select>
+
+              <div className="text-xs text-gray-500 mb-1 mt-3">Target</div>
+              <select
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="cover">Cover Letter only</option>
+                <option value="cv">Tailored CV only</option>
+              </select>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-500 mt-3">
+            Server scoring & generation via <code>/api/openai-match</code>.
+          </p>
         </div>
-        <Chat visible={hasRun} ctx={scores} applyCV={applyCV} applyCover={applyCover} />
+
+        {/* Live Assistant placeholder area (in old build, chat opened after first run) */}
+        <div className="rounded-xl shadow border bg-white p-4">
+          <h3 className="font-semibold text-gray-800 mb-2">Live Assistant</h3>
+          <textarea
+            readOnly
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48 bg-gray-50"
+            value={`הצ׳אט נפתח לאחר הרצה ראשונה (placeholder בגרסה זו).`}
+          />
+        </div>
       </div>
 
-      {/* Outputs */}
+      {/* outputs */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className={ui.card}>
+        <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className={ui.title}>Cover Letter</h3>
-            <button className={ui.btnGhost} onClick={()=>navigator.clipboard?.writeText(cover)}>Copy</button>
+            <h3 className="font-semibold text-gray-800">Cover Letter</h3>
+            <button
+              className="rounded-lg border px-3 py-2 text-sm"
+              onClick={() => navigator.clipboard?.writeText(cover)}
+            >
+              Copy
+            </button>
           </div>
-          <textarea className={ui.input+" h-48"} value={cover} onChange={e=>setCover(e.target.value)} />
+          <textarea
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+            value={cover}
+            onChange={(e) => setCover(e.target.value)}
+          />
         </div>
-        <div className={ui.card}>
+
+        <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className={ui.title}>Tailored CV</h3>
-            <button className={ui.btnGhost} onClick={()=>navigator.clipboard?.writeText(tailored)}>Copy</button>
+            <h3 className="font-semibold text-gray-800">Tailored CV</h3>
+            <button
+              className="rounded-lg border px-3 py-2 text-sm"
+              onClick={() => navigator.clipboard?.writeText(tailored)}
+            >
+              Copy
+            </button>
           </div>
-          <textarea className={ui.input+" h-48"} value={tailored} onChange={e=>setTailored(e.target.value)} />
+          <textarea
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+            value={tailored}
+            onChange={(e) => setTailored(e.target.value)}
+          />
         </div>
       </div>
     </div>
