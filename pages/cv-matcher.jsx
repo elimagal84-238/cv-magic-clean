@@ -106,10 +106,9 @@ async function readFileToText(file) {
     return await file.text();
   }
   if (ext === "pdf" || file.type === "application/pdf") {
-    const pdfjs = await import("pdfjs-dist/build/pdf");
-    const workerSrc = await import("pdfjs-dist/build/pdf.worker.mjs");
-    // @ts-ignore
-    pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+    // ✅ תאימות ל-pdfjs-dist v4 ב-Next.js
+    const pdfjs = await import("pdfjs-dist");
+    await import("pdfjs-dist/build/pdf.worker.mjs");
     const data = new Uint8Array(await file.arrayBuffer());
     const pdf = await pdfjs.getDocument({ data }).promise;
     let text = "";
@@ -123,7 +122,8 @@ async function readFileToText(file) {
     return text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   }
   if (ext === "docx") {
-    const mammoth = await import("mammoth/mammoth.browser");
+    // ✅ שים לב ל-.js — פותר "module not found" בבילד
+    const mammoth = await import("mammoth/mammoth.browser.js");
     const arrayBuffer = await file.arrayBuffer();
     const { value } = await mammoth.convertToMarkdown({ arrayBuffer });
     return value;
@@ -651,7 +651,9 @@ export default function CVMatcher() {
               </button>
               <button
                 className={btn}
-                onClick={() => exportDocx("cover_letter.docx", "Cover Letter", cover)}
+                onClick={() =>
+                  exportDocx("cover_letter.docx", "Cover Letter", cover)
+                }
               >
                 Export DOCX
               </button>
@@ -677,7 +679,9 @@ export default function CVMatcher() {
               </button>
               <button
                 className={btn}
-                onClick={() => exportDocx("tailored_cv.docx", "Tailored CV", tailored)}
+                onClick={() =>
+                  exportDocx("tailored_cv.docx", "Tailored CV", tailored)
+                }
               >
                 Export DOCX
               </button>
