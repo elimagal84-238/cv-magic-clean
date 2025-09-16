@@ -5,8 +5,8 @@
 // חשוב: עדכן נתיבי ייבוא אם המבנה אצלך שונה.
 // לדוגמה, אם שמרת את normalize ב־"lib/normalize.js", שנה את הנתיב בהתאם.
 // ────────────────────────────────────────────────────────────────────────────────
-import { normalizeCV, normalizeJD } from "@/src/utils/normalize";
-import { atsScore } from "@/lib/ats-scoring";
+import { normalizeCV, normalizeJD } from "../../src/utils/normalize";
+import { atsScore } from "../../lib/ats-scoring";
 
 import OpenAI from "openai";
 
