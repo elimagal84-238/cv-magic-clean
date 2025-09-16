@@ -1,103 +1,178 @@
 // pages/api/openai-match.js
-// CV-Magic — API v0.5 (single-file, zero-deps, build-safe)
-// POST { job_description, cv_text } -> { scores, rationales }
+// CV-Magic — Universal ATS API (HE/EN aware), no external deps
+// POST { job_description, cv_text } -> { match_score, skills_match, keywords_match, experience_match, requirements_match, strengths, gaps }
 
-const SKILLS = [
-  "javascript","typescript","react","node","express","nextjs","html","css","sass",
-  "python","django","flask","pandas","numpy","scikit-learn",
-  "java","spring","kotlin","c#","dotnet",".net","asp.net",
-  "sql","postgres","mysql","mongodb","redis",
-  "aws","gcp","azure","docker","kubernetes","terraform",
-  "git","ci","cd","jira","confluence",
-  "analytics","ga4","seo","sem","content","matlab","r","tableau","powerbi"
-];
-const WEIGHTS = { keywords: 0.20, skills: 0.30, experience: 0.20, requirements: 0.30 };
+export const config = { runtime: 'edge' };
+
 const clamp = (n, min = 0, max = 100) => Math.max(min, Math.min(max, n));
+const uniq = (arr) => Array.from(new Set(arr));
+const intersection = (A, B) => {
+  const b = new Set(B), out = [];
+  for (const x of new Set(A)) if (b.has(x)) out.push(x);
+  return out;
+};
 
-// ---------- extract (ללא lookbehind/FS/Imports) ----------
-const WORD = /[A-Za-z\u0590-\u05FF][A-Za-z\u0590-\u05FF0-9+\-/#.]*/g;
-function tokenize(t){
-  const m=(t||"").toLowerCase().replace(/[^A-Za-z0-9\u0590-\u05FF+\-/#.\s]/g," ").match(WORD);
-  return m?m:[];
-}
-function splitSentences(t){
-  // ללא lookbehind כדי למנוע כשלים בבילד
-  return (t||"").replace(/\r/g,"").split(/[.!?]+|\n+/).map(s=>s.trim()).filter(Boolean);
-}
-function extractBulletedRequirements(t){
-  // תיקון REGEX: בלי בריחה ל־• ובלי /u — תואם SWC
-  const bullet = /^\s*(?:[*\-•]|\d+\.)\s+/;
-  return (t||"").split(/\n/).map(l=>l.trim())
-    .filter(l=>bullet.test(l))
-    .map(l=>l.replace(bullet,"").trim());
-}
-function extractYears(t){
-  const hits=t.match(/\b(\d{1,2})\s*(?:yrs?|years?|שנים)\b/gi)||[];
-  return hits.map(m=>parseInt(m,10)).filter(n=>!isNaN(n));
-}
-function extractSkills(tokens){
-  const set=new Set(tokens);
-  const out=[]; for(const s of SKILLS) if(set.has(String(s).toLowerCase())) out.push(s);
-  return Array.from(new Set(out));
-}
-function extractAll(jd,cv){
-  const jdTok=tokenize(jd), cvTok=tokenize(cv);
-  return {
-    jd:{ requirements:extractBulletedRequirements(jd), skills:extractSkills(jdTok), years:extractYears(jd), tokens:jdTok },
-    cv:{ sentences:splitSentences(cv), skills:extractSkills(cvTok), years:extractYears(cv), tokens:cvTok }
-  };
+function normalizeText(s) {
+  return String(s || '')
+    .replace(/\r/g, '\n')
+    .replace(/[\u0591-\u05C7]/g, '')      // Hebrew niqqud
+    .replace(/[–—]/g, '-')                 // dashes
+    .replace(/[“”„‟"״]/g, '"')
+    .replace(/[’׳']/g, "'")
+    .replace(/[·•▪◦●]/g, '•')
+    .replace(/\u200f|\u200e/g, '')         // RTL marks
+    .toLowerCase();
 }
 
-// ---------- score ----------
-const uniq = a => Array.from(new Set(a));
-function keywordOverlap(a,b){ const A=new Set(a); let hit=0; for(const t of uniq(b)) if(A.has(t)) hit++; const d=Math.max(1,uniq(a).length); return (hit/d)*100; }
-function skillsScore(js,cs){ if(!js.length) return 0; const L=cs.map(x=>String(x).toLowerCase()); const hit=js.filter(s=>L.includes(String(s).toLowerCase())).length; return (hit/js.length)*100; }
-function experienceScore(jd,cv){ const j=jd.length?Math.max(...jd):0, c=cv.length?Math.max(...cv):0;
-  if(!j&&!c) return 50; if(!j) return 70; if(!c) return 30; const r=c/j;
-  if(r>=1.2) return 90; if(r>=1.0) return 75; if(r>=0.7) return 55; return 35; }
-function bestSentence(req, sentences){
-  const reqT=String(req).toLowerCase().split(/\s+/).filter(Boolean);
-  let best={idx:-1,score:0,text:""}; sentences.forEach((s,i)=>{ const sT=s.toLowerCase().split(/\s+/);
-    const A=new Set(reqT); let hit=0; for(const t of uniq(sT)) if(A.has(t)) hit++; const d=Math.max(1,reqT.length);
-    const overlap=(hit/d)*100; if(overlap>best.score) best={idx:i,score:overlap,text:s}; }); return best; }
-function scoreAll(data){
-  const { jd, cv }=data;
-  const kw=keywordOverlap(jd.tokens, cv.tokens);
-  const sk=skillsScore(jd.skills, cv.skills);
-  const ex=experienceScore(jd.years, cv.years);
-  const rationales=[]; let covered=0;
-  if(jd.requirements.length){
-    for(const req of jd.requirements){
-      const ev=bestSentence(req, cv.sentences);
-      const reqKw=ev.score, reqSk=sk, reqEx=ex;
-      const agg=0.5*reqKw + 0.25*reqSk + 0.25*reqEx;
-      let status="missing"; if(agg>=70){ status="met"; covered++; } else if(agg>=40){ status="partial"; }
-      rationales.push({
-        requirement:req, status, evidence:ev.idx>=0?ev.text:undefined,
-        reason: status==="met" ? "נמצאה חפיפה טובה בין ניסוח הדרישה למשפטים בקו״ח."
-             : status==="partial" ? "חפיפה חלקית; מומלץ לחדד מונחים/מספרים רלוונטיים."
-             : "אין ראיה מספקת בקו״ח; הוסף ניסיון/כישור ספציפי.",
-        subscores:{ keywords:Math.round(reqKw), skills:Math.round(reqSk), experience:Math.round(reqEx) }
-      });
-    }
+const STOP_HE = new Set([
+  'של','עם','על','גם','או','אם','כך','כדי','כי','אז','זו','זה','וה','ו','לא','בלי','הם','הן','הוא','היא','אני','אנחנו',
+  'אתם','אתן','את','אתה','אותו','אותה','אותם','אותן','כל','עוד','אך','אבל','מאוד','יותר','פחות','וכן','כמו','ללא','יש','אין',
+  'ב','ל','כ','מ','מה','כאשר','שהוא','שהיא','שלה','שלהם','שלו','שלכם','שלכן','הזה','הזו','האלה','אלה','זהו','זוהי','וכו','וכו׳'
+]);
+const STOP_EN = new Set([
+  'the','a','an','to','of','in','on','at','for','and','or','but','is','are','be','as','by','with','this','that','these','those',
+  'from','it','its','your','their','our','my','me','we','you','i','was','were','been','will','can','could','should','would',
+  'about','over','under','per'
+]);
+
+function tokenize(s) {
+  const t = normalizeText(s);
+  const raw = t.split(/[^0-9a-z\u0590-\u05FF]+/i).filter(Boolean);
+  const out = [];
+  for (const w of raw) {
+    if (STOP_HE.has(w) || STOP_EN.has(w)) continue;
+    const ww = w.replace(/^['"]+|['"]+$/g, '');
+    if (ww) out.push(ww);
   }
-  const reqCov = jd.requirements.length ? (covered/jd.requirements.length)*100 : Math.max(40, kw-10);
-  const overall = clamp(Math.round(kw*WEIGHTS.keywords + sk*WEIGHTS.skills + ex*WEIGHTS.experience + reqCov*WEIGHTS.requirements));
-  return {
-    scores:{ match_score:overall, keywords:Math.round(clamp(kw)), skills:Math.round(clamp(sk)),
-             experience:Math.round(clamp(ex)), requirements_coverage:Math.round(clamp(reqCov)) },
-    rationales
-  };
+  return out;
 }
 
-// ---------- API ----------
-export default async function handler(req,res){
-  if(req.method!=="POST"){ res.setHeader("Allow","POST"); return res.status(405).json({error:"Method not allowed"}); }
-  try{
-    const { job_description, cv_text } = req.body || {};
-    if(!job_description || !cv_text) return res.status(400).json({ error:"job_description and cv_text are required" });
-    const extracted = extractAll(String(job_description), String(cv_text));
-    const result = scoreAll(extracted);
-    return res.status(200).json({ ok:true, extracted, ...result });
-  }catch(e){ console.error(e); return res.status(500).json({ error:"server_error" }); }
+function ngrams(tokens, n) {
+  const out = [];
+  for (let i = 0; i <= tokens.length - n; i++) out.push(tokens.slice(i, i + n).join(' '));
+  return out;
+}
+
+function splitRequirements(text) {
+  const t = normalizeText(text);
+  const bullet = t.split(/\n+/).map(x => x.trim()).filter(Boolean).filter(x => /^[•\-\*\d\.)]/.test(x));
+  if (bullet.length >= 2) return bullet;
+  return t.split(/(?<=[\.\!\?]|[\n\r])/)
+    .map(x => x.replace(/^[•\-\*\d\.)\s]+/, '').trim())
+    .filter(x => x.split(/\s+/).length >= 3);
+}
+
+function extractYears(s) {
+  const t = normalizeText(s), hits = [];
+  t.replace(/(\d{1,2})\s*(?:שנים|שנה|שנת)/g, (_, n) => (hits.push(+n), _));
+  t.replace(/(\d{1,2})\s*(?:years?|yrs?)/g,      (_, n) => (hits.push(+n), _));
+  return hits;
+}
+
+const STATIC_SKILLS = new Set([
+  // tech/office
+  'excel','word','powerpoint','outlook','sql','crm','erp','sap','oracle','salesforce','tableau','powerbi',
+  'jira','confluence','git','docker','kubernetes','python','javascript','react','node','java','.net','c#',
+  'ga4','seo','sem',
+  // general/business (he/en)
+  'שירות','שירות לקוחות','ניהול','ניהול צוות','ניהול פרויקטים','תפעול','בקרה','דוחות','תקציב','הדרכה',
+  'סדר וארגון','עמידה בלחץ','תקשורת בין אישית','משמרות','קבלת החלטות','נהלים','רכש','מלאי','מכירות',
+  'front desk','housekeeping','pos','קבלה','אדמיניסטרציה','שיווק','עבודה בצוות','english','אנגלית','עברית','arabic','russian'
+]);
+
+function jaccardScore(aTokens, bTokens) {
+  const A = uniq(aTokens), B = uniq(bTokens);
+  if (!A.length || !B.length) return 0;
+  const inter = intersection(A, B).length;
+  const uni = uniq([...A, ...B]).length;
+  return clamp((inter / Math.max(1, uni)) * 100);
+}
+
+function skillsScore(jdTokens, cvTokens) {
+  const jdSet = new Set(jdTokens), cvSet = new Set(cvTokens);
+  const staticJD = [];
+  for (const s of STATIC_SKILLS) if (jdSet.has(s)) staticJD.push(s);
+  const dyn = ngrams(jdTokens, 2).concat(ngrams(jdTokens, 3)).filter(p => !/^\d/.test(p) && !p.includes(' משרה '));
+  const cand = uniq(staticJD.concat(dyn)).slice(0, 200);
+  if (!cand.length) return 0;
+  let hits = 0;
+  for (const c of cand) {
+    if (c.includes(' ')) {
+      const parts = c.split(' ');
+      if (parts.every(w => cvSet.has(w))) hits++;
+    } else if (cvSet.has(c)) hits++;
+  }
+  return clamp((hits / cand.length) * 100);
+}
+
+function requirementsCoverage(jdText, cvTokens) {
+  const reqs = splitRequirements(jdText);
+  if (!reqs.length) return 0;
+  const cvSet = new Set(cvTokens);
+  let covered = 0;
+  for (const r of reqs) {
+    const rTok = tokenize(r);
+    if (!rTok.length) continue;
+    const rSet = new Set(rTok);
+    const inter = Array.from(rSet).filter(x => cvSet.has(x)).length;
+    const uni = uniq([...rSet, ...cvSet]).length;
+    const sim = inter / Math.max(1, uni);
+    if (sim >= 0.35) covered++;
+  }
+  return clamp((covered / reqs.length) * 100);
+}
+
+function experienceScore(jdText, cvText) {
+  const jy = extractYears(jdText), cy = extractYears(cvText);
+  const j = jy.length ? Math.max(...jy) : 0;
+  const c = cy.length ? Math.max(...cy) : 0;
+  if (!j && !c) return 50;
+  if (!j) return 70;
+  if (!c) return 30;
+  const r = c / j;
+  if (r >= 1.2) return 90;
+  if (r >= 1.0) return 75;
+  if (r >= 0.7) return 55;
+  return 35;
+}
+
+const WEIGHTS = { keywords: 0.25, skills: 0.30, requirements: 0.25, experience: 0.20 };
+
+export default async function handler(req) {
+  if (req.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'POST only' }), { status: 405 });
+  }
+  const { job_description = '', cv_text = '' } = await req.json().catch(() => ({}));
+  const jdText = String(job_description || ''), cvText = String(cv_text || '');
+  const jdTokens = tokenize(jdText), cvTokens = tokenize(cvText);
+
+  const scores = {
+    keywords: jaccardScore(jdTokens, cvTokens),
+    skills:    skillsScore(jdTokens, cvTokens),
+    requirements: requirementsCoverage(jdText, cvTokens),
+    experience:   experienceScore(jdText, cvText),
+  };
+  const match_score = clamp(
+    scores.keywords * WEIGHTS.keywords +
+    scores.skills * WEIGHTS.skills +
+    scores.requirements * WEIGHTS.requirements +
+    scores.experience * WEIGHTS.experience
+  );
+
+  const strengths = [], gaps = [];
+  (scores.skills >= 40)      ? strengths.push('Skills align with the role.')
+                             : gaps.push('Important skills are missing or not explicitly mentioned.');
+  (scores.requirements >= 50)? strengths.push('Many job requirements are covered.')
+                             : gaps.push('Some job requirements are not addressed in the CV.');
+  (scores.experience >= 55)  ? strengths.push('Experience level seems adequate.')
+                             : gaps.push('Experience might be below the expectation.');
+
+  return new Response(JSON.stringify({
+    match_score: Math.round(match_score),
+    skills_match: Math.round(scores.skills),
+    keywords_match: Math.round(scores.keywords),
+    experience_match: Math.round(scores.experience),
+    requirements_match: Math.round(scores.requirements),
+    strengths, gaps,
+  }), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
