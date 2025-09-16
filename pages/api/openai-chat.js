@@ -1,26 +1,22 @@
 // pages/api/openai-chat.js
-// Simple chat API for the Live Assistant (HE/EN). Uses OpenAI (gpt-4o-mini).
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
-
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
   const {
     job_description = "",
     cv_text = "",
-    ats_scores = null,        // {match, keywords, requirements, experience, skills}
-    messages = [],            // [{role:'user'|'assistant', text:string}]
+    ats_scores = null,
+    messages = [],
     temperature = 0.3,
   } = req.body || {};
 
-  // Build chat messages
   const sys = [
     "You are CV-Magic Live Assistant.",
     "Task: improve resume & cover letter to fit the job.",
-    "NEVER invent facts not present in the CV unless the user explicitly provides them.",
-    "Be concise, concrete, and actionable. Prefer bullet points.",
-    "If user asks to rewrite, produce short snippets they can paste.",
+    "NEVER invent facts not present in the CV unless provided by the user.",
+    "Be concise, concrete, and actionable. Prefer bullet points."
   ].join(" ");
 
   const context = [
@@ -29,13 +25,11 @@ export default async function handler(req, res) {
     ats_scores
       ? `ATS SCORES (0-100): match=${ats_scores.match}, keywords=${ats_scores.keywords}, requirements=${ats_scores.requirements}, experience=${ats_scores.experience}, skills=${ats_scores.skills}\n`
       : "",
-    "You may refer to the scores to prioritize suggestions."
   ].join("");
 
   const chat = [
     { role: "system", content: sys },
     { role: "user", content: context },
-    // user/assistant history (map to OpenAI format)
     ...messages.map(m => ({ role: m.role, content: m.text })),
   ];
 
