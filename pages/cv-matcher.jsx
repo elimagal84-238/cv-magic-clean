@@ -1,9 +1,6 @@
 // pages/cv-matcher.jsx
-// CV-Magic — Matcher UI (enhanced + Drag&Drop)
-// - Upload PDF/DOCX/TXT + Drag&Drop + URL for JD and CV
-// - Export DOCX for outputs
-// - Clean buttons + subtle hover
-// - Live chat, RTL/LTR auto, responsive gauges
+// CV-Magic — Matcher UI (clean buttons + working uploads)
+// Upload PDF/DOCX/TXT + Drag&Drop + URL • Export DOCX • Live chat
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -47,11 +44,11 @@ const loadLS = (k, d) => {
 };
 const autoDir = (s) => (/[\u0590-\u05FF]/.test(String(s || "")) ? "rtl" : "ltr");
 
-// ---------- Minimal buttons ----------
+// ---------- Minimal, clean buttons ----------
 const btn =
-  "inline-flex items-center justify-center rounded-md border border-gray-900/70 px-3 py-2 text-sm text-gray-900 hover:bg-gray-50 transition-colors disabled:opacity-60";
+  "inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 hover:bg-gray-100 transition disabled:opacity-60";
 const btnPrimary =
-  "inline-flex items-center justify-center rounded-md border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 transition-colors disabled:opacity-60";
+  "inline-flex items-center justify-center rounded-lg border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 transition disabled:opacity-60";
 
 // ---------- Ring Gauge ----------
 function RingGauge({ label, value = 0, size = 150, stroke = 14 }) {
@@ -102,12 +99,13 @@ async function readFileToText(file) {
     throw new Error(`File too large (>${FILE_SIZE_LIMIT_MB}MB).`);
   }
   const ext = (file.name.split(".").pop() || "").toLowerCase();
+  // TXT
   if (ext === "txt" || file.type.startsWith("text/")) {
     return await file.text();
   }
+  // PDF
   if (ext === "pdf" || file.type === "application/pdf") {
-    // ✅ תאימות ל-pdfjs-dist v4 ב-Next.js
-    const pdfjs = await import("pdfjs-dist");
+    const pdfjs = await import("pdfjs-dist"); // v4 ESM
     await import("pdfjs-dist/build/pdf.worker.mjs");
     const data = new Uint8Array(await file.arrayBuffer());
     const pdf = await pdfjs.getDocument({ data }).promise;
@@ -121,13 +119,14 @@ async function readFileToText(file) {
     }
     return text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   }
+  // DOCX
   if (ext === "docx") {
-    // ✅ שים לב ל-.js — פותר "module not found" בבילד
     const mammoth = await import("mammoth/mammoth.browser.js");
     const arrayBuffer = await file.arrayBuffer();
     const { value } = await mammoth.convertToMarkdown({ arrayBuffer });
     return value;
   }
+  // fallback
   return await file.text();
 }
 
@@ -150,23 +149,22 @@ async function exportDocx(filename, title, bodyText) {
   const paras = [];
   if (title)
     paras.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }));
-  const lines = String(bodyText || "").split(/\n/);
-  for (const line of lines) {
-    if (!line.trim()) {
-      paras.push(new Paragraph(""));
-      continue;
-    }
-    if (/^\s*[•\-]\s+/.test(line)) {
-      paras.push(
-        new Paragraph({
-          text: line.replace(/^\s*[•\-]\s+/, ""),
-          bullet: { level: 0 },
-        })
-      );
-    } else {
-      paras.push(new Paragraph({ children: [new TextRun(line)] }));
-    }
-  }
+  String(bodyText || "")
+    .split(/\n/)
+    .forEach((line) => {
+      if (!line.trim()) {
+        paras.push(new Paragraph(""));
+      } else if (/^\s*[•\-]\s+/.test(line)) {
+        paras.push(
+          new Paragraph({
+            text: line.replace(/^\s*[•\-]\s+/, ""),
+            bullet: { level: 0 },
+          })
+        );
+      } else {
+        paras.push(new Paragraph({ children: [new TextRun(line)] }));
+      }
+    });
   const doc = new Document({ sections: [{ children: paras }] });
   const blob = await Packer.toBlob(doc);
   const a = document.createElement("a");
@@ -195,10 +193,9 @@ function DropZone({ onFile, children }) {
         if (f) onFile(f);
       }}
       className={cn(
-        "rounded-md border p-2 transition-colors",
+        "rounded-lg border p-2 transition-colors",
         over ? "border-gray-900 bg-gray-50" : "border-transparent"
       )}
-      aria-label="Drop file here"
     >
       <label className="inline-flex gap-2 items-center cursor-pointer">
         <input
@@ -277,7 +274,7 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
         <h3 className="font-semibold text-gray-800 mb-2">Live Assistant</h3>
         <textarea
           readOnly
-          className="w-full rounded-md border px-3 py-2 text-sm h-48 bg-gray-50"
+          className="w-full rounded-lg border px-3 py-2 text-sm h-48 bg-gray-50"
           value="הצ׳אט נפתח לאחר הרצה ראשונה."
         />
       </div>
@@ -299,7 +296,7 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
       </div>
       <div
         ref={boxRef}
-        className="border rounded-md p-3 h-48 overflow-auto bg-gray-50"
+        className="border rounded-lg p-3 h-48 overflow-auto bg-gray-50"
       >
         {msgs.map((m, i) => (
           <div
@@ -307,7 +304,7 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
             className={cn("mb-2", m.role === "user" && "text-right")}
             dir={autoDir(m.text)}
           >
-            <div className="inline-block px-3 py-2 rounded-md bg-white whitespace-pre-wrap break-words text-sm">
+            <div className="inline-block px-3 py-2 rounded-lg bg-white whitespace-pre-wrap break-words text-sm">
               {m.text}
             </div>
           </div>
@@ -316,7 +313,7 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
       <div className="mt-2 flex gap-2">
         <input
           dir="auto"
-          className="w-full rounded-md border px-3 py-2 text-sm"
+          className="w-full rounded-lg border px-3 py-2 text-sm"
           placeholder="כתוב הודעה…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -361,6 +358,7 @@ export default function CVMatcher() {
     return () => window.removeEventListener("resize", handle);
   }, []);
 
+  // load saved
   useEffect(() => {
     const cvSaved = String(loadLS(LS_KEYS.cv, "") || "");
     if (cvSaved && !cv) setCV(cvSaved);
@@ -368,12 +366,8 @@ export default function CVMatcher() {
     if (jdSaved && !jd) setJD(jdSaved);
   }, []); // eslint-disable-line
 
-  useEffect(() => {
-    saveLS(LS_KEYS.cv, String(cv || ""));
-  }, [cv]);
-  useEffect(() => {
-    saveLS(LS_KEYS.jd, String(jd || ""));
-  }, [jd]);
+  useEffect(() => saveLS(LS_KEYS.cv, String(cv || "")), [cv]);
+  useEffect(() => saveLS(LS_KEYS.jd, String(jd || "")), [jd]);
 
   async function run() {
     setRunning(true);
@@ -464,9 +458,7 @@ export default function CVMatcher() {
         <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Job Description</h3>
-            <button className={btn} onClick={() => setJD("")}>
-              Clear
-            </button>
+            <button className={btn} onClick={() => setJD("")}>Clear</button>
           </div>
 
           <DropZone onFile={(file) => handleFile("jd", file)}>
@@ -475,16 +467,14 @@ export default function CVMatcher() {
 
           <textarea
             dir="auto"
-            className="w-full rounded-md border px-3 py-2 text-sm h-48 mt-2"
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48 mt-2"
             placeholder="Paste the job ad here…"
             value={jd}
             onChange={(e) => setJD(e.target.value)}
           />
 
           <div className="mt-2 flex flex-wrap gap-2">
-            <button className={btn} onClick={() => handleUrl("jd")}>
-              Paste URL
-            </button>
+            <button className={btn} onClick={() => handleUrl("jd")}>Paste URL</button>
           </div>
           <p className="mt-2 text-xs text-gray-500">
             * Clears on refresh/exit. Upload: PDF/DOCX/TXT (≤{FILE_SIZE_LIMIT_MB}
@@ -496,9 +486,7 @@ export default function CVMatcher() {
         <div className="rounded-xl shadow border bg-white p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Your CV</h3>
-            <button className={btn} onClick={() => setCV("")}>
-              Clear
-            </button>
+            <button className={btn} onClick={() => setCV("")}>Clear</button>
           </div>
 
           <DropZone onFile={(file) => handleFile("cv", file)}>
@@ -507,16 +495,14 @@ export default function CVMatcher() {
 
           <textarea
             dir="auto"
-            className="w-full rounded-md border px-3 py-2 text-sm h-48 mt-2"
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48 mt-2"
             placeholder="Paste your CV text here… (saved locally)"
             value={cv}
             onChange={(e) => setCV(e.target.value)}
           />
 
           <div className="mt-2 flex flex-wrap gap-2">
-            <button className={btn} onClick={() => handleUrl("cv")}>
-              Paste URL
-            </button>
+            <button className={btn} onClick={() => handleUrl("cv")}>Paste URL</button>
           </div>
           <p className="mt-2 text-xs text-gray-500">
             * Saved locally (localStorage).
@@ -527,17 +513,9 @@ export default function CVMatcher() {
       {/* Gauges */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
         <RingGauge label="Keywords" value={scores.keywords} size={gaugeSize} />
-        <RingGauge
-          label="Requirements"
-          value={scores.requirements}
-          size={gaugeSize}
-        />
+        <RingGauge label="Requirements" value={scores.requirements} size={gaugeSize} />
         <RingGauge label="Match" value={scores.match} size={gaugeSize} />
-        <RingGauge
-          label="Experience"
-          value={scores.experience}
-          size={gaugeSize}
-        />
+        <RingGauge label="Experience" value={scores.experience} size={gaugeSize} />
         <RingGauge label="Skills" value={scores.skills} size={gaugeSize} />
       </div>
 
@@ -558,7 +536,7 @@ export default function CVMatcher() {
             <div>
               <div className="text-xs text-gray-500 mb-1">Role Preset</div>
               <select
-                className="w-full rounded-md border px-3 py-2 text-sm"
+                className="w-full rounded-lg border px-3 py-2 text-sm"
                 value={JSON.stringify(rolePreset)}
                 onChange={(e) => {
                   const v = JSON.parse(e.target.value);
@@ -567,14 +545,11 @@ export default function CVMatcher() {
                 }}
               >
                 {Object.entries(ROLE_PRESETS).map(([name, v]) => (
-                  <option key={name} value={JSON.stringify(v)}>
-                    {name}
-                  </option>
+                  <option key={name} value={JSON.stringify(v)}>{name}</option>
                 ))}
               </select>
               <p className="text-xs text-gray-500 mt-1">
-                Min: {rolePreset.min} | Max: {rolePreset.max} | Step:{" "}
-                {rolePreset.step}
+                Min: {rolePreset.min} | Max: {rolePreset.max} | Step: {rolePreset.step}
               </p>
             </div>
 
@@ -599,7 +574,7 @@ export default function CVMatcher() {
             <div>
               <div className="text-xs text-gray-500 mb-1">Model</div>
               <select
-                className="w-full rounded-md border px-3 py-2 text-sm"
+                className="w-full rounded-lg border px-3 py-2 text-sm"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               >
@@ -610,7 +585,7 @@ export default function CVMatcher() {
 
               <div className="text-xs text-gray-500 mb-1 mt-3">Target</div>
               <select
-                className="w-full rounded-md border px-3 py-2 text-sm"
+                className="w-full rounded-lg border px-3 py-2 text-sm"
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
               >
@@ -622,8 +597,7 @@ export default function CVMatcher() {
           </div>
 
           <p className="text-xs text-gray-500 mt-3">
-            Server via <code>/api/openai-match</code>. URL proxy via{" "}
-            <code>/api/fetch-url</code>. Chat via <code>/api/openai-chat</code>.
+            Server via <code>/api/openai-match</code>. URL proxy via <code>/api/fetch-url</code>. Chat via <code>/api/openai-chat</code>.
           </p>
         </div>
 
@@ -643,25 +617,13 @@ export default function CVMatcher() {
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Cover Letter</h3>
             <div className="flex gap-2">
-              <button
-                className={btn}
-                onClick={() => navigator.clipboard?.writeText(cover)}
-              >
-                Copy
-              </button>
-              <button
-                className={btn}
-                onClick={() =>
-                  exportDocx("cover_letter.docx", "Cover Letter", cover)
-                }
-              >
-                Export DOCX
-              </button>
+              <button className={btn} onClick={() => navigator.clipboard?.writeText(cover)}>Copy</button>
+              <button className={btn} onClick={() => exportDocx("cover_letter.docx", "Cover Letter", cover)}>Export DOCX</button>
             </div>
           </div>
           <textarea
             dir="auto"
-            className="w-full rounded-md border px-3 py-2 text-sm h-48"
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
             value={cover}
             onChange={(e) => setCover(e.target.value)}
           />
@@ -671,25 +633,13 @@ export default function CVMatcher() {
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Tailored CV</h3>
             <div className="flex gap-2">
-              <button
-                className={btn}
-                onClick={() => navigator.clipboard?.writeText(tailored)}
-              >
-                Copy
-              </button>
-              <button
-                className={btn}
-                onClick={() =>
-                  exportDocx("tailored_cv.docx", "Tailored CV", tailored)
-                }
-              >
-                Export DOCX
-              </button>
+              <button className={btn} onClick={() => navigator.clipboard?.writeText(tailored)}>Copy</button>
+              <button className={btn} onClick={() => exportDocx("tailored_cv.docx", "Tailored CV", tailored)}>Export DOCX</button>
             </div>
           </div>
           <textarea
             dir="auto"
-            className="w-full rounded-md border px-3 py-2 text-sm h-48"
+            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
             value={tailored}
             onChange={(e) => setTailored(e.target.value)}
           />
