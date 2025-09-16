@@ -1,24 +1,24 @@
 // pages/cv-matcher.jsx
-// CV-Magic — Matcher UI (clean buttons + working uploads)
-// Upload PDF/DOCX/TXT + Drag&Drop + URL • Export DOCX • Live chat
+// CV-Magic — Matcher UI v1.1 (UX pass: outline buttons, loaders, toasts, undo+versioning)
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_KEYS = {
+/* -------------------- constants & utils -------------------- */
+const LS = {
   cv: "cvMagic.cvText",
   jd: "cvMagic.jdText",
+  cvHist: "cvMagic.cvHist",
+  jdHist: "cvMagic.jdHist",
   slider: "cvMagic.creativitySlider",
   role: "cvMagic.rolePreset",
   runIdx: "cvMagic.runIndex",
 };
-
 const ROLE_PRESETS = {
   Surgeon: { min: 0.1, max: 0.4, step: 0.05 },
   Accountant: { min: 0.15, max: 0.45, step: 0.05 },
   "Product Manager": { min: 0.3, max: 0.7, step: 0.07 },
   Copywriter: { min: 0.4, max: 0.9, step: 0.1 },
 };
-
 const FILE_SIZE_LIMIT_MB = 10;
 const ACCEPT_MIME =
   ".pdf,.docx,.txt,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -44,14 +44,64 @@ const loadLS = (k, d) => {
 };
 const autoDir = (s) => (/[\u0590-\u05FF]/.test(String(s || "")) ? "rtl" : "ltr");
 
-// ---------- Minimal, clean buttons ----------
+/* -------------------- clean buttons -------------------- */
 const btn =
   "inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 hover:bg-gray-100 transition disabled:opacity-60";
 const btnPrimary =
   "inline-flex items-center justify-center rounded-lg border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 transition disabled:opacity-60";
 
-// ---------- Ring Gauge ----------
-function RingGauge({ label, value = 0, size = 150, stroke = 14 }) {
+/* -------------------- toasts -------------------- */
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  function push(msg, type = "info", ttl = 3000) {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((ts) => [...ts, { id, msg, type }]);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), ttl);
+  }
+  function Toasts() {
+    return (
+      <div className="fixed bottom-4 right-4 z-[9999] space-y-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={cn(
+              "rounded-lg border px-3 py-2 text-sm shadow-sm bg-white",
+              t.type === "error" && "border-red-300 text-red-700",
+              t.type === "success" && "border-green-300 text-green-700",
+              t.type === "info" && "border-gray-200 text-gray-800"
+            )}
+          >
+            {t.msg}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return { push, Toasts };
+}
+
+/* -------------------- skeletons & overlay -------------------- */
+const Skeleton = ({ className = "" }) => (
+  <div
+    className={cn(
+      "animate-pulse rounded-lg bg-gradient-to-r from-gray-100 via-gray-200 to-gray-100 bg-[length:200%_100%]",
+      className
+    )}
+  />
+);
+const LoadingOverlay = ({ show, label = "Working…" }) =>
+  !show ? null : (
+    <div className="absolute inset-0 z-10 grid place-items-center rounded-xl bg-white/60 backdrop-blur-[1px]">
+      <div className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+        <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-900 border-t-transparent" />
+        {label}
+      </div>
+    </div>
+  );
+
+/* -------------------- ring gauge -------------------- */
+function RingGauge({ label, value = 0, size = 150, stroke = 14, loading }) {
+  if (loading) return <Skeleton className="h-[150px] w-[150px]" />;
   const r = (size - stroke) / 2,
     c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Number(value || 0)));
@@ -92,20 +142,17 @@ function RingGauge({ label, value = 0, size = 150, stroke = 14 }) {
   );
 }
 
-// ---------- File/URL helpers ----------
+/* -------------------- files & url -------------------- */
 async function readFileToText(file) {
   const sizeMB = file.size / (1024 * 1024);
-  if (sizeMB > FILE_SIZE_LIMIT_MB) {
+  if (sizeMB > FILE_SIZE_LIMIT_MB)
     throw new Error(`File too large (>${FILE_SIZE_LIMIT_MB}MB).`);
-  }
   const ext = (file.name.split(".").pop() || "").toLowerCase();
-  // TXT
-  if (ext === "txt" || file.type.startsWith("text/")) {
-    return await file.text();
-  }
-  // PDF
+
+  if (ext === "txt" || file.type.startsWith("text/")) return await file.text();
+
   if (ext === "pdf" || file.type === "application/pdf") {
-    const pdfjs = await import("pdfjs-dist"); // v4 ESM
+    const pdfjs = await import("pdfjs-dist");
     await import("pdfjs-dist/build/pdf.worker.mjs");
     const data = new Uint8Array(await file.arrayBuffer());
     const pdf = await pdfjs.getDocument({ data }).promise;
@@ -119,17 +166,16 @@ async function readFileToText(file) {
     }
     return text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   }
-  // DOCX
+
   if (ext === "docx") {
     const mammoth = await import("mammoth/mammoth.browser.js");
     const arrayBuffer = await file.arrayBuffer();
     const { value } = await mammoth.convertToMarkdown({ arrayBuffer });
     return value;
   }
-  // fallback
+
   return await file.text();
 }
-
 async function fetchUrlText(url) {
   const r = await fetch("/api/fetch-url", {
     method: "POST",
@@ -141,7 +187,7 @@ async function fetchUrlText(url) {
   return String(j.text || "");
 }
 
-// ---------- Export DOCX ----------
+/* -------------------- export docx -------------------- */
 async function exportDocx(filename, title, bodyText) {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import(
     "docx"
@@ -152,18 +198,15 @@ async function exportDocx(filename, title, bodyText) {
   String(bodyText || "")
     .split(/\n/)
     .forEach((line) => {
-      if (!line.trim()) {
-        paras.push(new Paragraph(""));
-      } else if (/^\s*[•\-]\s+/.test(line)) {
+      if (!line.trim()) paras.push(new Paragraph(""));
+      else if (/^\s*[•\-]\s+/.test(line))
         paras.push(
           new Paragraph({
             text: line.replace(/^\s*[•\-]\s+/, ""),
             bullet: { level: 0 },
           })
         );
-      } else {
-        paras.push(new Paragraph({ children: [new TextRun(line)] }));
-      }
+      else paras.push(new Paragraph({ children: [new TextRun(line)] }));
     });
   const doc = new Document({ sections: [{ children: paras }] });
   const blob = await Packer.toBlob(doc);
@@ -176,7 +219,7 @@ async function exportDocx(filename, title, bodyText) {
   URL.revokeObjectURL(a.href);
 }
 
-// ---------- DropZone ----------
+/* -------------------- drop zone -------------------- */
 function DropZone({ onFile, children }) {
   const [over, setOver] = useState(false);
   return (
@@ -210,7 +253,7 @@ function DropZone({ onFile, children }) {
   );
 }
 
-// ---------- Live Assistant (chat) ----------
+/* -------------------- chat -------------------- */
 function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApplyCV }) {
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
@@ -314,7 +357,7 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
         <input
           dir="auto"
           className="w-full rounded-lg border px-3 py-2 text-sm"
-          placeholder="כתוב הודעה…"
+          placeholder="כתב/י הודעה…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
@@ -327,14 +370,22 @@ function LiveAssistant({ visible, jobDesc, userCV, scores, onApplyCover, onApply
   );
 }
 
+/* -------------------- main -------------------- */
 export default function CVMatcher() {
+  const toast = useToasts();
   const [jd, setJD] = useState("");
   const [cv, setCV] = useState("");
+
+  // histories for undo
+  const [jdHist, setJdHist] = useState(loadLS(LS.jdHist, []));
+  const [cvHist, setCvHist] = useState(loadLS(LS.cvHist, []));
+  const maxHist = 10;
+
   const [rolePreset, setRolePreset] = useState(
-    loadLS(LS_KEYS.role, ROLE_PRESETS["Product Manager"])
+    loadLS(LS.role, ROLE_PRESETS["Product Manager"])
   );
-  const [slider, setSlider] = useState(Number(loadLS(LS_KEYS.slider, 5)) || 5);
-  const [runIdx, setRunIdx] = useState(Number(loadLS(LS_KEYS.runIdx, 0)) || 0);
+  const [slider, setSlider] = useState(Number(loadLS(LS.slider, 5)) || 5);
+  const [runIdx, setRunIdx] = useState(Number(loadLS(LS.runIdx, 0)) || 0);
   const [model, setModel] = useState("chatgpt");
   const [target, setTarget] = useState("all");
 
@@ -358,16 +409,63 @@ export default function CVMatcher() {
     return () => window.removeEventListener("resize", handle);
   }, []);
 
-  // load saved
+  // load saved once
   useEffect(() => {
-    const cvSaved = String(loadLS(LS_KEYS.cv, "") || "");
+    const cvSaved = String(loadLS(LS.cv, "") || "");
     if (cvSaved && !cv) setCV(cvSaved);
-    const jdSaved = String(loadLS(LS_KEYS.jd, "") || "");
+    const jdSaved = String(loadLS(LS.jd, "") || "");
     if (jdSaved && !jd) setJD(jdSaved);
   }, []); // eslint-disable-line
 
-  useEffect(() => saveLS(LS_KEYS.cv, String(cv || "")), [cv]);
-  useEffect(() => saveLS(LS_KEYS.jd, String(jd || "")), [jd]);
+  // persist
+  useEffect(() => saveLS(LS.cv, String(cv || "")), [cv]);
+  useEffect(() => saveLS(LS.jd, String(jd || "")), [jd]);
+  useEffect(() => {
+    saveLS(LS.cvHist, cvHist);
+    saveLS(LS.jdHist, jdHist);
+  }, [cvHist, jdHist]);
+
+  // debounced snapshot to history
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (cv) {
+        setCvHist((h) => {
+          const next = [...h, cv].slice(-maxHist);
+          return next;
+        });
+      }
+    }, 500);
+    return () => clearTimeout(id);
+  }, [cv]);
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (jd) {
+        setJdHist((h) => {
+          const next = [...h, jd].slice(-maxHist);
+          return next;
+        });
+      }
+    }, 500);
+    return () => clearTimeout(id);
+  }, [jd]);
+
+  function undo(which) {
+    if (which === "jd" && jdHist.length) {
+      const last = jdHist[jdHist.length - 2]; // חזרה אחת אחורה
+      if (last !== undefined) {
+        setJD(last);
+        setJdHist((h) => h.slice(0, -1));
+        toast.push("שוחזר טקסט המשרה", "info");
+      }
+    } else if (which === "cv" && cvHist.length) {
+      const last = cvHist[cvHist.length - 2];
+      if (last !== undefined) {
+        setCV(last);
+        setCvHist((h) => h.slice(0, -1));
+        toast.push("שוחזר טקסט קורות החיים", "info");
+      }
+    }
+  }
 
   async function run() {
     setRunning(true);
@@ -400,11 +498,12 @@ export default function CVMatcher() {
       setHasRun(true);
       setRunIdx((x) => {
         const n = (Number(x || 0) + 1) % 99999;
-        saveLS(LS_KEYS.runIdx, n);
+        saveLS(LS.runIdx, n);
         return n;
       });
+      toast.push("ההרצה הסתיימה בהצלחה", "success");
     } catch (e) {
-      alert("Run failed: " + (e?.message || "unknown"));
+      toast.push("שגיאה בהרצה: " + (e?.message || "unknown"), "error", 5000);
     } finally {
       setRunning(false);
     }
@@ -425,43 +524,36 @@ export default function CVMatcher() {
   const applyCV = (text) =>
     setTailored((t) => `${t}\n\n---\nAssistant suggestions:\n${text}`);
 
-  // ---- Drag&Drop / Upload / URL handlers ----
-  async function handleFile(which, file) {
-    if (!file) return;
-    try {
-      const text = await readFileToText(file);
-      if (which === "jd")
-        setJD((p) => (p ? `${p}\n\n${text}` : text));
-      else setCV((p) => (p ? `${p}\n\n${text}` : text));
-    } catch (e) {
-      alert("Cannot read file: " + (e?.message || "unknown"));
-    }
-  }
-  async function handleUrl(which) {
-    const url = prompt("הדבק/י URL:");
-    if (!url) return;
-    try {
-      const text = await fetchUrlText(url);
-      if (which === "jd")
-        setJD((p) => (p ? `${p}\n\n${text}` : text));
-      else setCV((p) => (p ? `${p}\n\n${text}` : text));
-    } catch (e) {
-      alert("URL fetch error: " + (e?.message || "unknown"));
-    }
-  }
+  /* -------------------- render -------------------- */
+  const gaugesLoading = running && !hasRun;
 
   return (
-    <div className="container mx-auto p-4 md:p-6">
+    <div className="container mx-auto p-4 md:p-6 relative">
+      <toast.Toasts />
+
       {/* Inputs */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* JD */}
-        <div className="rounded-xl shadow border bg-white p-4">
+        <div className="rounded-xl shadow border bg-white p-4 relative">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Job Description</h3>
-            <button className={btn} onClick={() => setJD("")}>Clear</button>
+            <div className="flex gap-2">
+              <button className={btn} onClick={() => undo("jd")}>Undo</button>
+              <button className={btn} onClick={() => setJD("")}>Clear</button>
+            </div>
           </div>
 
-          <DropZone onFile={(file) => handleFile("jd", file)}>
+          <DropZone
+            onFile={async (file) => {
+              try {
+                const text = await readFileToText(file);
+                setJD((p) => (p ? `${p}\n\n${text}` : text));
+                toast.push(`נטען קובץ: ${file.name}`, "success");
+              } catch (e) {
+                toast.push("טעינת קובץ נכשלה: " + (e?.message || ""), "error");
+              }
+            }}
+          >
             <button className={btn}>Upload File or Drop here</button>
           </DropZone>
 
@@ -474,22 +566,52 @@ export default function CVMatcher() {
           />
 
           <div className="mt-2 flex flex-wrap gap-2">
-            <button className={btn} onClick={() => handleUrl("jd")}>Paste URL</button>
+            <button
+              className={btn}
+              onClick={async () => {
+                const url = prompt("הדבק/י URL למודעה:");
+                if (!url) return;
+                try {
+                  const text = await fetchUrlText(url);
+                  setJD((p) => (p ? `${p}\n\n${text}` : text));
+                  toast.push("נטען טקסט מ-URL", "success");
+                } catch (e) {
+                  toast.push("URL נכשל: " + (e?.message || ""), "error");
+                }
+              }}
+            >
+              Paste URL
+            </button>
           </div>
           <p className="mt-2 text-xs text-gray-500">
             * Clears on refresh/exit. Upload: PDF/DOCX/TXT (≤{FILE_SIZE_LIMIT_MB}
             MB) • URL proxy via /api/fetch-url.
           </p>
+
+          <LoadingOverlay show={running && !hasRun} />
         </div>
 
         {/* CV */}
-        <div className="rounded-xl shadow border bg-white p-4">
+        <div className="rounded-xl shadow border bg-white p-4 relative">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Your CV</h3>
-            <button className={btn} onClick={() => setCV("")}>Clear</button>
+            <div className="flex gap-2">
+              <button className={btn} onClick={() => undo("cv")}>Undo</button>
+              <button className={btn} onClick={() => setCV("")}>Clear</button>
+            </div>
           </div>
 
-          <DropZone onFile={(file) => handleFile("cv", file)}>
+          <DropZone
+            onFile={async (file) => {
+              try {
+                const text = await readFileToText(file);
+                setCV((p) => (p ? `${p}\n\n${text}` : text));
+                toast.push(`נטען קובץ: ${file.name}`, "success");
+              } catch (e) {
+                toast.push("טעינת קובץ נכשלה: " + (e?.message || ""), "error");
+              }
+            }}
+          >
             <button className={btn}>Upload File or Drop here</button>
           </DropZone>
 
@@ -502,26 +624,41 @@ export default function CVMatcher() {
           />
 
           <div className="mt-2 flex flex-wrap gap-2">
-            <button className={btn} onClick={() => handleUrl("cv")}>Paste URL</button>
+            <button
+              className={btn}
+              onClick={async () => {
+                const url = prompt("הדבק/י URL לקורות חיים:");
+                if (!url) return;
+                try {
+                  const text = await fetchUrlText(url);
+                  setCV((p) => (p ? `${p}\n\n${text}` : text));
+                  toast.push("נטען טקסט מ-URL", "success");
+                } catch (e) {
+                  toast.push("URL נכשל: " + (e?.message || ""), "error");
+                }
+              }}
+            >
+              Paste URL
+            </button>
           </div>
-          <p className="mt-2 text-xs text-gray-500">
-            * Saved locally (localStorage).
-          </p>
+          <p className="mt-2 text-xs text-gray-500">* Saved locally (localStorage).</p>
+
+          <LoadingOverlay show={running && !hasRun} />
         </div>
       </div>
 
       {/* Gauges */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
-        <RingGauge label="Keywords" value={scores.keywords} size={gaugeSize} />
-        <RingGauge label="Requirements" value={scores.requirements} size={gaugeSize} />
-        <RingGauge label="Match" value={scores.match} size={gaugeSize} />
-        <RingGauge label="Experience" value={scores.experience} size={gaugeSize} />
-        <RingGauge label="Skills" value={scores.skills} size={gaugeSize} />
+        <RingGauge label="Keywords" value={scores.keywords} size={gaugeSize} loading={gaugesLoading} />
+        <RingGauge label="Requirements" value={scores.requirements} size={gaugeSize} loading={gaugesLoading} />
+        <RingGauge label="Match" value={scores.match} size={gaugeSize} loading={gaugesLoading} />
+        <RingGauge label="Experience" value={scores.experience} size={gaugeSize} loading={gaugesLoading} />
+        <RingGauge label="Skills" value={scores.skills} size={gaugeSize} loading={gaugesLoading} />
       </div>
 
       {/* Controls + Chat */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className="rounded-xl shadow border bg-white p-4">
+        <div className="rounded-xl shadow border bg-white p-4 relative">
           <div className="flex items-center justify-between mb-3">
             <div className="font-semibold text-gray-800">Controls</div>
             <button className={btnPrimary} onClick={run} disabled={running}>
@@ -541,11 +678,13 @@ export default function CVMatcher() {
                 onChange={(e) => {
                   const v = JSON.parse(e.target.value);
                   setRolePreset(v);
-                  saveLS(LS_KEYS.role, v);
+                  saveLS(LS.role, v);
                 }}
               >
                 {Object.entries(ROLE_PRESETS).map(([name, v]) => (
-                  <option key={name} value={JSON.stringify(v)}>{name}</option>
+                  <option key={name} value={JSON.stringify(v)}>
+                    {name}
+                  </option>
                 ))}
               </select>
               <p className="text-xs text-gray-500 mt-1">
@@ -565,7 +704,7 @@ export default function CVMatcher() {
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   setSlider(v);
-                  saveLS(LS_KEYS.slider, v);
+                  saveLS(LS.slider, v);
                 }}
               />
               <div className="text-xs text-gray-500 mt-1">Value: {slider}</div>
@@ -599,6 +738,8 @@ export default function CVMatcher() {
           <p className="text-xs text-gray-500 mt-3">
             Server via <code>/api/openai-match</code>. URL proxy via <code>/api/fetch-url</code>. Chat via <code>/api/openai-chat</code>.
           </p>
+
+          <LoadingOverlay show={running} />
         </div>
 
         <LiveAssistant
@@ -613,36 +754,72 @@ export default function CVMatcher() {
 
       {/* Outputs */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className="rounded-xl shadow border bg-white p-4">
+        <div className="rounded-xl shadow border bg-white p-4 relative">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Cover Letter</h3>
             <div className="flex gap-2">
-              <button className={btn} onClick={() => navigator.clipboard?.writeText(cover)}>Copy</button>
-              <button className={btn} onClick={() => exportDocx("cover_letter.docx", "Cover Letter", cover)}>Export DOCX</button>
+              <button
+                className={btn}
+                onClick={async () => {
+                  await navigator.clipboard?.writeText(cover);
+                  toast.push("הועתק ללוח", "success");
+                }}
+              >
+                Copy
+              </button>
+              <button
+                className={btn}
+                onClick={() => exportDocx("cover_letter.docx", "Cover Letter", cover)}
+              >
+                Export DOCX
+              </button>
             </div>
           </div>
-          <textarea
-            dir="auto"
-            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
-            value={cover}
-            onChange={(e) => setCover(e.target.value)}
-          />
+          {running && !hasRun ? (
+            <Skeleton className="h-48" />
+          ) : (
+            <textarea
+              dir="auto"
+              className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+              value={cover}
+              onChange={(e) => setCover(e.target.value)}
+            />
+          )}
+          <LoadingOverlay show={running && hasRun} />
         </div>
 
-        <div className="rounded-xl shadow border bg-white p-4">
+        <div className="rounded-xl shadow border bg-white p-4 relative">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-800">Tailored CV</h3>
             <div className="flex gap-2">
-              <button className={btn} onClick={() => navigator.clipboard?.writeText(tailored)}>Copy</button>
-              <button className={btn} onClick={() => exportDocx("tailored_cv.docx", "Tailored CV", tailored)}>Export DOCX</button>
+              <button
+                className={btn}
+                onClick={async () => {
+                  await navigator.clipboard?.writeText(tailored);
+                  toast.push("הועתק ללוח", "success");
+                }}
+              >
+                Copy
+              </button>
+              <button
+                className={btn}
+                onClick={() => exportDocx("tailored_cv.docx", "Tailored CV", tailored)}
+              >
+                Export DOCX
+              </button>
             </div>
           </div>
-          <textarea
-            dir="auto"
-            className="w-full rounded-lg border px-3 py-2 text-sm h-48"
-            value={tailored}
-            onChange={(e) => setTailored(e.target.value)}
-          />
+          {running && !hasRun ? (
+            <Skeleton className="h-48" />
+          ) : (
+            <textarea
+              dir="auto"
+              className="w-full rounded-lg border px-3 py-2 text-sm h-48"
+              value={tailored}
+              onChange={(e) => setTailored(e.target.value)}
+            />
+          )}
+          <LoadingOverlay show={running && hasRun} />
         </div>
       </div>
     </div>
