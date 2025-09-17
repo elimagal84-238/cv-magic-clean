@@ -1,60 +1,57 @@
 // components/ScoreMeters.jsx
 import React from "react";
 
-/** עיגול מדד אחד */
-function Meter({ label, value = 0 }) {
+/**
+ * Gauge עגול פשוט עבור ערכים 0..100
+ */
+function Gauge({ label, value = 0 }) {
   const v = Math.max(0, Math.min(100, Number(value) || 0));
-  const R = 54;           // רדיוס
-  const C = 2 * Math.PI * R; // היקף
-  const off = C * (1 - v / 100);
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const dash = (v / 100) * circumference;
 
   return (
     <div className="flex flex-col items-center justify-center">
       <svg viewBox="0 0 120 120" className="w-28 h-28">
-        {/* מסגרת אפורה */}
         <circle
           cx="60"
           cy="60"
-          r={R}
+          r={radius}
+          stroke="#eee"
+          strokeWidth="12"
           fill="none"
-          stroke="#e5e7eb"
-          strokeWidth="10"
         />
-        {/* קשת ירוקה – מתקדמת לפי value */}
         <circle
           cx="60"
           cy="60"
-          r={R}
-          fill="none"
+          r={radius}
           stroke="#22c55e"
-          strokeWidth="10"
+          strokeWidth="12"
+          fill="none"
           strokeLinecap="round"
-          strokeDasharray={C}
-          strokeDashoffset={off}
+          strokeDasharray={`${dash} ${circumference - dash}`}
           transform="rotate(-90 60 60)"
-          style={{ transition: "stroke-dashoffset 600ms ease" }}
         />
-        {/* הנקודה האדומה למעלה */}
-        <circle cx="60" cy="10" r="5" fill="#ef4444" />
-        {/* הערך באמצע */}
         <text
           x="60"
-          y="62"
+          y="64"
           textAnchor="middle"
-          fontSize="18"
+          fontSize="22"
           fontWeight="700"
-          fill="#111827"
+          fill="#ef4444"
         >
           {v}%
         </text>
       </svg>
-      <div className="mt-2 text-sm font-semibold text-gray-800">{label}</div>
+      <div className="mt-1 text-sm font-medium text-gray-700">{label}</div>
     </div>
   );
 }
 
-/** שורת 4 המדים */
-export function ScoreMeters({
+/**
+ * קומפוננטת המטרים – מקבלת 4 ערכים (0..100)
+ */
+export default function ScoreMeters({
   keywords = 0,
   requirements = 0,
   match = 0,
@@ -62,12 +59,12 @@ export function ScoreMeters({
   skills = 0,
 }) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mt-4">
-      <Meter label="Keywords" value={keywords} />
-      <Meter label="Requirements" value={requirements} />
-      <Meter label="Match" value={match} />
-      <Meter label="Experience" value={experience} />
-      <Meter label="Skills" value={skills} />
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mt-4">
+      <Gauge label="Keywords" value={keywords} />
+      <Gauge label="Requirements" value={requirements} />
+      <Gauge label="Match" value={match} />
+      <Gauge label="Experience" value={experience} />
+      <Gauge label="Skills" value={skills} />
     </div>
   );
 }
