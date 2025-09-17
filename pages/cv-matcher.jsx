@@ -1,6 +1,7 @@
 // pages/cv-matcher.jsx
 // CV-Magic — Matcher UI v1.2
 import { useEffect, useMemo, useRef, useState } from "react";
+import ScoreMeters from "@/components/ScoreMeters";
 
 /* ---------- Polyfills (for older browsers) ---------- */
 if (typeof Promise !== "undefined" && !Promise.withResolvers) {
