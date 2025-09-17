@@ -1,6 +1,6 @@
 // pages/cv-matcher.jsx
 import React from "react";
-import ScoreMeters from "@/components/ScoreMeters";
++ import ScoreMeters from '../components/ScoreMeters';
 import { Document, Packer, Paragraph } from "docx";
 
 const LS_KEYS = {
