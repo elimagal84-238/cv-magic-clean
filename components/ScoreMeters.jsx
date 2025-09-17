@@ -1,70 +1,73 @@
 // components/ScoreMeters.jsx
 import React from "react";
 
-/**
- * RadialMeter – מד עגול 0..100
- */
-function RadialMeter({ label, value }) {
-  const clamped = Math.max(0, Math.min(100, Number(value ?? 0)));
-  const r = 48;                       // רדיוס
-  const c = 2 * Math.PI * r;          // היקף
-  const offset = c * (1 - clamped / 100);
+/** עיגול מדד אחד */
+function Meter({ label, value = 0 }) {
+  const v = Math.max(0, Math.min(100, Number(value) || 0));
+  const R = 54;           // רדיוס
+  const C = 2 * Math.PI * R; // היקף
+  const off = C * (1 - v / 100);
 
   return (
-    <div className="flex flex-col items-center justify-center p-3 select-none">
-      <div className="relative h-28 w-28">
-        <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120" role="img" aria-label={`${label} ${clamped}%`}>
-          <circle cx="60" cy="60" r={r} fill="none" stroke="#eee" strokeWidth="12" />
-          <circle
-            cx="60"
-            cy="60"
-            r={r}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="12"
-            strokeLinecap="round"
-            strokeDasharray={c}
-            strokeDashoffset={offset}
-            className="text-green-600 transition-[stroke-dashoffset] duration-700 ease-out"
-          />
-        </svg>
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="text-xl font-semibold">{clamped}%</span>
-        </div>
-      </div>
-      <div className="mt-2 text-sm font-medium text-gray-700">{label}</div>
+    <div className="flex flex-col items-center justify-center">
+      <svg viewBox="0 0 120 120" className="w-28 h-28">
+        {/* מסגרת אפורה */}
+        <circle
+          cx="60"
+          cy="60"
+          r={R}
+          fill="none"
+          stroke="#e5e7eb"
+          strokeWidth="10"
+        />
+        {/* קשת ירוקה – מתקדמת לפי value */}
+        <circle
+          cx="60"
+          cy="60"
+          r={R}
+          fill="none"
+          stroke="#22c55e"
+          strokeWidth="10"
+          strokeLinecap="round"
+          strokeDasharray={C}
+          strokeDashoffset={off}
+          transform="rotate(-90 60 60)"
+          style={{ transition: "stroke-dashoffset 600ms ease" }}
+        />
+        {/* הנקודה האדומה למעלה */}
+        <circle cx="60" cy="10" r="5" fill="#ef4444" />
+        {/* הערך באמצע */}
+        <text
+          x="60"
+          y="62"
+          textAnchor="middle"
+          fontSize="18"
+          fontWeight="700"
+          fill="#111827"
+        >
+          {v}%
+        </text>
+      </svg>
+      <div className="mt-2 text-sm font-semibold text-gray-800">{label}</div>
     </div>
   );
 }
 
-/**
- * ScoreMeters – גריד של 5 מדי ציון
- * props.scores מצופה בצורה: { keywords, requirements, match, experience, skills }
- */
-export default function ScoreMeters({ scores = {} }) {
-  const {
-    keywords = 0,
-    requirements = 0,
-    match = 0,
-    experience = 0,
-    skills = 0,
-  } = scores;
-
-  const items = [
-    { key: "keywords",    label: "Keywords",    value: keywords },
-    { key: "requirements",label: "Requirements",value: requirements },
-    { key: "match",       label: "Match",       value: match },
-    { key: "experience",  label: "Experience",  value: experience },
-    { key: "skills",      label: "Skills",      value: skills },
-  ];
-
+/** שורת 4 המדים */
+export function ScoreMeters({
+  keywords = 0,
+  requirements = 0,
+  match = 0,
+  experience = 0,
+  skills = 0,
+}) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mt-4">
-      {items.map((it) => (
-        <div key={it.key} className="rounded-xl shadow border bg-white p-4">
-          <RadialMeter label={it.label} value={it.value} />
-        </div>
-      ))}
+      <Meter label="Keywords" value={keywords} />
+      <Meter label="Requirements" value={requirements} />
+      <Meter label="Match" value={match} />
+      <Meter label="Experience" value={experience} />
+      <Meter label="Skills" value={skills} />
     </div>
   );
 }
