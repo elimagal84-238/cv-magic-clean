@@ -1,159 +1,86 @@
-// pages/api/openai-match.js
-// LLM-only version (no heuristic gauges). Returns scores + texts from the model.
+// pages/api/score-match.js
+// Pure deterministic scoring for gauges (no LLM). Safe to call on every run.
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   try {
     const {
-      job_description,
-      cv_text,
-      role_preset,   // { min, max, step }
-      slider,        // 1..9
-      run_index,
-      temperature,   // optional override
-      model_pref,    // "chatgpt" | "gemini" | "claude" (we use OpenAI here)
-      target,        // "all" | "cover" | "cv"
+      job_description = "",
+      cv_text = "",
     } = req.body || {};
 
-    // -------- sanitize / derive --------
     const jd = String(job_description || "").slice(0, 50_000);
     const cv = String(cv_text || "").slice(0, 50_000);
-    const runIndex = Number(run_index || 0) || 0;
-    const model = String(model_pref || "chatgpt");
 
-    const s = clampInt(Number(slider || 5), 1, 9);
-    const p = normalizeRolePreset(role_preset);
-    const tFromSlider = p.min + ((p.max - p.min) * (s - 1 + (runIndex % 3) * 0.15)) / 8;
-    const temp = clamp01(0.5 * tFromSlider + 0.5 * clamp01(Number(temperature ?? tFromSlider)));
+    // ---- tokenization (he/en), keep only letters/digits, drop very short words
+    const tokenize = (s) =>
+      String(s || "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2);
 
-    // -------- schema + prompts --------
-    const schema = `
-{
-  "type": "object",
-  "properties": {
-    "match_score": { "type": "number", "minimum": 0, "maximum": 100 },
-    "keywords": { "type": "number", "minimum": 0, "maximum": 100 },
-    "requirements_coverage": { "type": "number", "minimum": 0, "maximum": 100 },
-    "experience": { "type": "number", "minimum": 0, "maximum": 100 },
-    "skills": { "type": "number", "minimum": 0, "maximum": 100 },
-    "tailored_cv": { "type": "string" },
-    "cover_letter": { "type": "string" }
-  },
-  "required": ["match_score","keywords","requirements_coverage","experience","skills","tailored_cv","cover_letter"],
-  "additionalProperties": false
-}`.trim();
+    const clamp100 = (x) => Math.max(0, Math.min(100, Math.round(Number(x || 0))));
 
-    const system = `
-You are CV-Magic, an ATS-aware assistant.
-Return ONLY JSON that strictly matches the schema.
-Each score is 0..100. Keep cover_letter concise and targeted; tailored_cv may use short bullets.
-Mirror JD terminology but stay truthful to the provided CV.`.trim();
+    const jdTokens = new Set(tokenize(jd));
+    const cvTokens = new Set(tokenize(cv));
+    const overlap = [...jdTokens].filter((t) => cvTokens.has(t));
+    const keywords_match = clamp100(jdTokens.size ? (overlap.length / jdTokens.size) * 100 : 0);
 
-    const user = `
-[JOB DESCRIPTION]
-${jd}
+    // requirements: detect bullet lines (•, -, *) or lines under "requirements/דרישות"
+    const reqLines = jd
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter((s) => s && (/^[-*•]/.test(s) || /(^|\s)(דרישות|requirements?)\b/i.test(s)));
 
-[CV]
-${cv}
+    const reqMatched = reqLines.filter((line) => {
+      const keys = tokenize(line).slice(0, 6);
+      return keys.some((w) => cvTokens.has(w));
+    }).length;
+    const requirements_match = clamp100(
+      reqLines.length ? (reqMatched / reqLines.length) * 100 : keywords_match
+    );
 
-[SLIDERS]
-temperature=${temp.toFixed(2)} ; preset=${JSON.stringify(p)}
-target=${String(target || "all")}
+    // skills: simple hint dictionary (can be extended later)
+    const HINT_SKILLS = [
+      "excel","sql","python","javascript","node","react","typescript","docker","kubernetes",
+      "communication","leadership","sales","marketing","crm","hubspot","figma","photoshop",
+      "seo","sem","ppc","kpi","jira","agile","scrum","analysis","analytics",
+      "אקסל","פייתון","שיווק","מכירות","ניהול","דאטא","תוכן","עיצוב","ביצועים","crm","פרויקטים"
+    ];
+    const jdSkills = HINT_SKILLS.filter((k) => jd.toLowerCase().includes(k));
+    const skillsMatched = jdSkills.filter((k) => cv.toLowerCase().includes(k)).length;
+    const skills_match = clamp100(jdSkills.length ? (skillsMatched / jdSkills.length) * 100 : keywords_match);
 
-[SCHEMA]
-${schema}
+    // experience (years): number near שנה/שנים/years
+    const years = (s) => {
+      const m = String(s || "").toLowerCase().match(/(\d+)\s*(?:שנ(?:ה|ים)|years?)/);
+      return m ? Number(m[1]) : 0;
+    };
+    const jdYears = years(jd);
+    const cvYears = years(cv);
+    const experience_match = clamp100(jdYears ? (cvYears / jdYears) * 100 : keywords_match);
 
-Return ONLY minified JSON conforming to the schema above.`.trim();
+    const match_score = clamp100((keywords_match + requirements_match + skills_match + experience_match) / 4);
 
-    // -------- LLM call --------
-    const llmContent = await callOpenAI(system, user, temp);
-    const obj = safeParse(llmContent);
+    const parsed_jd = {
+      lang: /[\u0590-\u05FF]/.test(jd) ? "he" : "en",
+      requirements: reqLines.map((text) => ({ text, weight: 1 })),
+      skills: jdSkills.map((name) => ({ name })),
+    };
 
-    // -------- response (field names expected by frontend) --------
     return res.status(200).json({
-      match_score:        clamp100(obj.match_score),
-      keywords_match:     clamp100(obj.keywords),
-      requirements_match: clamp100(obj.requirements_coverage),
-      experience_match:   clamp100(obj.experience),
-      skills_match:       clamp100(obj.skills),
-      tailored_cv:        String(obj.tailored_cv || ""),
-      cover_letter:       String(obj.cover_letter || ""),
-      temperature:        temp,
-      model:              model,
-      run_index:          runIndex,
-      slider:             s,
-      role_preset:        p,
-      target:             String(target || "all"),
+      match_score,
+      keywords_match,
+      requirements_match,
+      experience_match,
+      skills_match,
+      parsed_jd,
+      model: "deterministic",
     });
   } catch (e) {
-    console.error("openai-match error:", e);
-    return res.status(500).json({ error: e?.message || "Server error" });
-  }
-}
-
-/* ===================== utils ===================== */
-function clamp01(x){ return Math.max(0, Math.min(1, Number(x || 0))); }
-function clamp100(x){ const n = Number(x); return Math.max(0, Math.min(100, Math.round(Number.isFinite(n) ? n : 0))); }
-function clampInt(x,a,b){ return Math.max(a, Math.min(b, Math.round(Number(x)||0))); }
-
-function normalizeRolePreset(rp){
-  const f = { min: 0.2, max: 0.8, step: 0.1 };
-  if (!rp || typeof rp !== "object") return f;
-  const min  = typeof rp.min  === "number" ? rp.min  : f.min;
-  const max  = typeof rp.max  === "number" ? rp.max  : f.max;
-  const step = typeof rp.step === "number" ? rp.step : f.step;
-  return { min: clamp01(min), max: clamp01(max), step: clamp01(step) };
-}
-
-/* ---------- OpenAI call (Chat Completions) ---------- */
-async function callOpenAI(system, user, temperature){
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
-
-  const messages = [
-    { role: "system", content: system },
-    { role: "user",   content: user   },
-  ];
-
-  const body = {
-    model: "gpt-4o-mini",
-    messages,
-    temperature: clamp01(temperature),
-    response_format: { type: "json_object" },
-  };
-
-  const json = await postJson("https://api.openai.com/v1/chat/completions", body, {
-    Authorization: `Bearer ${apiKey}`,
-  });
-
-  return json?.choices?.[0]?.message?.content || "{}";
-}
-
-async function postJson(url, body, headers = {}){
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok){
-    const t = await resp.text();
-    throw new Error(`OpenAI error ${resp.status}: ${t}`);
-  }
-  return resp.json();
-}
-
-function safeParse(s){
-  try{
-    return JSON.parse(s);
-  }catch{
-    const i = s.indexOf("{"), k = s.lastIndexOf("}");
-    if (i >= 0 && k > i){
-      try{ return JSON.parse(s.slice(i, k+1)); }catch{}
-    }
-    return {
-      match_score: 0, keywords: 0, requirements_coverage: 0, experience: 0, skills: 0,
-      tailored_cv: "", cover_letter: ""
-    };
+    console.error("score-match error:", e);
+    return res.status(500).json({ error: e?.message || "server error" });
   }
 }
