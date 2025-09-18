@@ -73,6 +73,8 @@ const LoadingOverlay=({show,label="Working…"})=>!show?null:(
 );
 
 /* ---------- ring gauge ---------- */
+const raw = typeof value === "string" ? parseFloat(String(value).replace(/[^\d.-]/g, "")) : Number(value);
+const pct  = Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 0));
 function RingGauge({label,value=0,size=150,stroke=14,loading}){
   if(loading) return <Skeleton className="h-[150px] w-[150px]"/>;
   const r=(size-stroke)/2, c=2*Math.PI*r;
