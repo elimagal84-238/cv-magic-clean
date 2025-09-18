@@ -1,105 +1,204 @@
 // pages/api/openai-match.js
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+// Generates ATS scores + Cover Letter + Tailored CV with a strict template.
+
+export const config = {
+  runtime: "edge",
+};
+
+function pickLang(jd, cv) {
+  const text = `${jd || ""}\n${cv || ""}`;
+  return /[\u0590-\u05FF]/.test(text) ? "he" : "en";
+}
+
+function sysPrompt(lang) {
+  const he = lang === "he";
+  return (
+    (he
+      ? "אתה עוזר ATS שמייצר מכתב מקדים וקורות-חיים מותאמים בקפדנות למודעת דרושים.\n"
+      : "You are an ATS assistant that produces a cover letter and strictly ATS-friendly tailored resume.\n") +
+    (he
+      ? "עליך להחזיר JSON בלבד (ללא טקסט נוסף) עם השדות: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.\n"
+      : "Return JSON ONLY (no extra text) with fields: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.\n") +
+    (he
+      ? "הקפד על מספרים בין 0 ל-100 לשדות הציון. הטקסטים בעברית תקנית.\n"
+      : "Scores must be integers 0..100. Texts must be in proper English.\n") +
+    (he
+      ? "לקורות-החיים: שמור פורמט ATS-Ready — כותרות ברורות, bullets קצרים, הישגים מדידים (%/מספרים/טווחי שנים), התאמת מילות מפתח מדרישות המשרה, ללא גרפיקה.\n"
+      : "For the resume: ATS-Ready format — clear headings, short bullets, measurable achievements (%, numbers, years), JD keywords blended, no graphics.\n")
+  );
+}
+
+function cvTemplate(lang) {
+  const he = lang === "he";
+  if (he) {
+    return `# פרטים אישיים
+שם מלא: <השלם אם חסר מה-CV>
+אימייל: <...> | טלפון: <...> | מיקום: <...> | קישורים: LinkedIn/GitHub (אם רלוונטי)
+
+# תקציר מקצועי
+• 2–4 שורות תמצית ממוקדת שמסבירה למה המועמד מתאים למשרה הספציפית.
+
+# מיומנויות מפתח (ATS)
+• מיומנות/טכנולוגיה/תחום — רמת שליטה / שנות ניסיון
+• מיומנות…
+• …
+
+# ניסיון תעסוקתי
+תפקיד | חברה | עיר/היברידי | שנים (YYYY–YYYY)
+• הישג מדיד 1 (מספרים/אחוזים/מעטפת)
+• הישג מדיד 2
+• התאמה למילות מפתח מהמשרה: <מילים מרכזיות משולבות בטבעיות>
+
+תפקיד | חברה | שנים
+• …
+
+# השכלה והכשרות
+• תואר/קורס | מוסד | שנים | תעודות (אם יש)
+
+# שפות
+• עברית — שוטפת | אנגלית — רמה X | שפות נוספות
+
+# פרויקטים/התנדבות (אופציונלי)
+• שם פרויקט — 1–2 bullets המראים ערך ותוצאה
+`;
+  }
+  // English template
+  return `# Contact
+Full Name: <fill if missing from CV>
+Email: <...> | Phone: <...> | Location: <...> | Links: LinkedIn/GitHub
+
+# Professional Summary
+• 2–4 lines summarizing exact fit for this JD.
+
+# Core Skills (ATS)
+• Skill/Tool/Domain — level / years
+• Skill…
+• …
+
+# Experience
+Role | Company | City/Hybrid | Years (YYYY–YYYY)
+• Measurable win 1 (%, numbers, scope)
+• Measurable win 2
+• JD keyword alignment: <natural keywords>
+
+Role | Company | Years
+• …
+
+# Education & Certifications
+• Degree/Course | Institution | Years | Certificates
+
+# Languages
+• English — Level | Other — Level
+
+# Projects/Volunteering (optional)
+• Project name — 1–2 bullets showing value/outcome
+`;
+}
+
+function userPrompt({ job_description, cv_text, lang, target }) {
+  const he = lang === "he";
+  const focus =
+    target === "cv"
+      ? he
+        ? "התמקד בעיקר ב־tailored_cv, מכתב מקדים אופציונלי."
+        : "Focus on tailored_cv; cover letter optional."
+      : target === "cover"
+      ? he
+        ? "התמקד בעיקר ב־cover_letter, קורות-חיים אופציונליים."
+        : "Focus on cover_letter; tailored CV optional."
+      : he
+      ? "החזר גם וגם — cover_letter וגם tailored_cv."
+      : "Return both cover_letter and tailored_cv.";
+  const tpl = cvTemplate(lang);
+  return (
+    (he ? "מודעת דרושים:\n" : "Job description:\n") +
+    job_description +
+    "\n\n" +
+    (he ? "קורות חיים מקוריים:\n" : "Original CV:\n") +
+    cv_text +
+    "\n\n" +
+    (he
+      ? "הוראות:\n" +
+        "- בצע השוואת ATS והחזר ציונים 0..100.\n" +
+        "- כתוב מכתב מקדים תמציתי (עד ~180 מילים) עם התאמה ישירה למשרה.\n" +
+        "- בנה קורות-חיים לפי התבנית הבאה (חובה לשמור על מבנה הכותרות):\n"
+      : "Instructions:\n" +
+        "- Perform ATS-style matching and return scores 0..100.\n" +
+        "- Write a concise cover letter (~180 words) tailored to this JD.\n" +
+        "- Build a resume strictly following this template (keep headings):\n") +
+    tpl +
+    "\n" +
+    focus +
+    "\n" +
+    (he
+      ? "החזר JSON בלבד, ללא הסברים נוספים. שמות שדות בדיוק: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv."
+      : "Return JSON only, no extra prose. Field names exactly: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.")
+  );
+}
+
+async function callOpenAI(apiKey, model, messages) {
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: model || "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      messages,
+    }),
+  });
+  if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}`);
+  const j = await r.json();
+  const txt = j?.choices?.[0]?.message?.content || "{}";
+  return JSON.parse(txt);
+}
+
+export default async function handler(req) {
   try {
-    const { job_description, cv_text, role_preset, slider, run_index, temperature, model_pref, target } = req.body || {};
-    const jd = String(job_description || "").slice(0,50_000);
-    const cv = String(cv_text || "").slice(0,50_000);
-    const runIndex = Number(run_index||0)||0;
-    const model = String(model_pref||"chatgpt");
+    if (req.method !== "POST") {
+      return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405 });
+    }
+    const body = await req.json();
+    const { job_description, cv_text, target = "all", model_pref } = body || {};
+    const lang = pickLang(job_description, cv_text);
 
-    const clamp01=x=>Math.max(0,Math.min(1,Number(x||0)));
-    const clamp100=x=>{const n=Number(x);return Math.max(0,Math.min(100,Math.round(Number.isFinite(n)?n:0)));};
-    const clampInt=(x,a,b)=>Math.max(a,Math.min(b,Math.round(Number(x)||0)));
-    const normPreset=(rp)=>{const f={min:0.2,max:0.8,step:0.1}; if(!rp||typeof rp!=="object")return f;
-      const min=typeof rp.min==="number"?rp.min:f.min, max=typeof rp.max==="number"?rp.max:f.max, step=typeof rp.step==="number"?rp.step:f.step;
-      return {min:clamp01(min),max:clamp01(max),step:clamp01(step)};};
+    const sys = sysPrompt(lang);
+    const user = userPrompt({ job_description, cv_text, lang, target });
 
-    const s = clampInt(Number(slider||5),1,9);
-    const p = normPreset(role_preset);
-    const tFromSlider = p.min + ((p.max-p.min)*(s-1 + (runIndex%3)*0.15))/8;
-    const temp = clamp01(0.5*tFromSlider + 0.5*clamp01(Number(temperature ?? tFromSlider)));
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return new Response(JSON.stringify({ error: "Missing OPENAI_API_KEY" }), { status: 500 });
+    }
 
-    const schema = `
-{
-  "type":"object",
-  "properties":{
-    "match_score":{"type":"number","minimum":0,"maximum":100},
-    "keywords":{"type":"number","minimum":0,"maximum":100},
-    "requirements_coverage":{"type":"number","minimum":0,"maximum":100},
-    "experience":{"type":"number","minimum":0,"maximum":100},
-    "skills":{"type":"number","minimum":0,"maximum":100},
-    "tailored_cv":{"type":"string"},
-    "cover_letter":{"type":"string"}
-  },
-  "required":["match_score","keywords","requirements_coverage","experience","skills","tailored_cv","cover_letter"],
-  "additionalProperties":false
-}`.trim();
+    const model =
+      model_pref === "gemini" || model_pref === "claude"
+        ? "gpt-4o-mini" // fallback if other providers chosen on UI
+        : "gpt-4o-mini";
 
-    const system = `
-You are CV-Magic, an ATS-aware assistant. Return ONLY minified JSON per schema.
-Scores must be 0..100. Keep cover_letter concise; tailored_cv can use short bullets.
-Mirror JD terminology but stay truthful to the CV.`.trim();
+    const data = await callOpenAI(apiKey, model, [
+      { role: "system", content: sys },
+      { role: "user", content: user },
+    ]);
 
-    const user = `
-[JOB DESCRIPTION]
-${jd}
+    // normalize & respect target
+    const out = {
+      match_score: Math.max(0, Math.min(100, Math.round(Number(data.match_score || data.match || 0)))),
+      keywords_match: Math.max(0, Math.min(100, Math.round(Number(data.keywords_match || data.keywords || 0)))),
+      requirements_match: Math.max(0, Math.min(100, Math.round(Number(data.requirements_match || data.requirements || 0)))),
+      experience_match: Math.max(0, Math.min(100, Math.round(Number(data.experience_match || data.experience || 0)))),
+      skills_match: Math.max(0, Math.min(100, Math.round(Number(data.skills_match || data.skills || 0)))),
+      cover_letter: String(data.cover_letter || ""),
+      tailored_cv: String(data.tailored_cv || ""),
+    };
 
-[CV]
-${cv}
+    if (target === "cv") out.cover_letter = ""; // return just CV
+    if (target === "cover") out.tailored_cv = ""; // return just Cover
 
-[SLIDERS]
-temperature=${temp.toFixed(2)} ; preset=${JSON.stringify(p)}
-target=${String(target||"all")}
-
-[SCHEMA]
-${schema}
-
-Return ONLY minified JSON conforming to the schema above.`.trim();
-
-    const content = await callOpenAI(system, user, temp);
-    const obj = safeParse(content);
-
-    return res.status(200).json({
-      match_score:        clamp100(obj.match_score),
-      keywords_match:     clamp100(obj.keywords),
-      requirements_match: clamp100(obj.requirements_coverage),
-      experience_match:   clamp100(obj.experience),
-      skills_match:       clamp100(obj.skills),
-      tailored_cv:        String(obj.tailored_cv||""),
-      cover_letter:       String(obj.cover_letter||""),
-      temperature:        temp,
-      model,
-      run_index:          runIndex,
-      slider:             s,
-      role_preset:        p,
-      target:             String(target||"all"),
-    });
+    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
   } catch (e) {
-    console.error("openai-match error:", e);
-    return res.status(500).json({ error: e?.message || "Server error" });
+    return new Response(JSON.stringify({ error: e.message || "error" }), { status: 500 });
   }
 }
-
-async function callOpenAI(system, user, temperature){
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
-  const body = {
-    model: "gpt-4o-mini",
-    messages: [{role:"system",content:system},{role:"user",content:user}],
-    temperature: Math.max(0,Math.min(1,Number(temperature||0.5))),
-    response_format: { type: "json_object" },
-  };
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method:"POST",
-    headers:{ "content-type":"application/json", Authorization:`Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-  });
-  if(!resp.ok){ const t=await resp.text(); throw new Error(`OpenAI error ${resp.status}: ${t}`); }
-  const j = await resp.json();
-  return j?.choices?.[0]?.message?.content || "{}";
-}
-function safeParse(s){ try{return JSON.parse(s);}catch{
-  const i=s.indexOf("{"), k=s.lastIndexOf("}"); if(i>=0&&k>i){ try{return JSON.parse(s.slice(i,k+1));}catch{} }
-  return { match_score:0, keywords:0, requirements_coverage:0, experience:0, skills:0, tailored_cv:"", cover_letter:"" };
-}}
