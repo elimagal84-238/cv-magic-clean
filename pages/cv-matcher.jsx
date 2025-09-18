@@ -497,88 +497,112 @@ const applyCV = (text) =>
       </div>
 
       {/* Controls + Chat */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className="rounded-xl shadow border bg-white p-4 relative">
-          <div className="flex items-center justify-between mb-3">
-            <div className="font-semibold text-gray-800">Controls</div>
-            <button className={btnPrimaryOutline} onClick={run} disabled={running}>
-              {running ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-900 border-t-transparent mr-2"/> : null}
-              {running ? "Running…" : "Run"}
-            </button>
-          </div>
+<div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+  {/* LEFT: Controls */}
+  <div className="rounded-xl shadow border bg-white p-4 relative">
+    <h3 className="font-semibold text-gray-800 mb-3">Controls</h3>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Role Preset</div>
-              <select className="w-full rounded-lg border px-3 py-2 text-sm"
-                value={JSON.stringify(rolePreset)}
-                onChange={(e)=>{const v=JSON.parse(e.target.value); setRolePreset(v); saveLS(LS.role,v);}}>
-                {Object.entries(ROLE_PRESETS).map(([name,v])=>(
-                  <option key={name} value={JSON.stringify(v)}>{name}</option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-500 mt-1">Min: {rolePreset.min} | Max: {rolePreset.max} | Step: {rolePreset.step}</p>
-            </div>
-
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Creativity (1..9)</div>
-              <input type="range" min={1} max={9} step={1} className="w-full" value={slider}
-                onChange={(e)=>{const v=Number(e.target.value); setSlider(v); saveLS(LS.slider,v);}}/>
-              <div className="text-xs text-gray-500 mt-1">Value: {slider}</div>
-            </div>
-
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Model</div>
-              <select className="w-full rounded-lg border px-3 py-2 text-sm" value={model} onChange={(e)=>setModel(e.target.value)}>
-                <option value="chatgpt">ChatGPT (OpenAI)</option>
-                <option value="gemini">Gemini (Google)</option>
-                <option value="claude">Claude (Anthropic)</option>
-              </select>
-
-              <div className="text-xs text-gray-500 mb-1 mt-3">Target</div>
-              <select className="w-full rounded-lg border px-3 py-2 text-sm" value={target} onChange={(e)=>setTarget(e.target.value)}>
-                <option value="all">All</option>
-                <option value="cover">Cover Letter only</option>
-                <option value="cv">Tailored CV only</option>
-              </select>
-            </div>
-          </div>
-
-          <p className="text-xs text-gray-500 mt-3">Server via <code>/api/openai-match</code>. URL proxy via <code>/api/fetch-url</code>. Chat via <code>/api/openai-chat</code>.</p>
-          <LoadingOverlay show={running}/>
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
+      {/* Role Preset */}
+      <div>
+        <div className="text-xs text-gray-500 mb-1">Role Preset</div>
+        <select className="w-full rounded-lg border px-3 py-2 text-sm"
+                value={rolePreset?.name||"custom"}
+                onChange={(e)=>setRolePreset(PRESETS[e.target.value]||PRESETS.custom)}>
+          {Object.keys(PRESETS).map(k=>
+            <option key={k} value={k}>{PRESETS[k].label}</option>
+          )}
+        </select>
+        <div className="text-[11px] text-gray-400 mt-1">
+          Min: {rolePreset.min} | Max: {rolePreset.max} | Step: {rolePreset.step}
         </div>
-
-        <LiveAssistant visible={hasRun} jobDesc={jd} userCV={cv} scores={scores} onApplyCover={applyCover} onApplyCV={applyCV}/>
       </div>
 
-      {/* Outputs */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
-        <div className="rounded-xl shadow border bg-white p-4 relative">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold text-gray-800">Cover Letter</h3>
-            <div className="flex gap-2">
-              <button className={btn} onClick={async()=>{await navigator.clipboard?.writeText(cover); toast.push("הועתק ללוח","success");}}>Copy</button>
-              <button className={btn} onClick={()=>exportDocx("cover_letter.docx","Cover Letter",cover)}>Export DOCX</button>
-            </div>
-          </div>
-          {running && !hasRun ? <Skeleton className="h-48"/> :
-            <textarea dir="auto" className="w-full rounded-lg border px-3 py-2 text-sm h-48" value={cover} onChange={(e)=>setCover(e.target.value)}/>}
-          <LoadingOverlay show={running && hasRun}/>
-        </div>
+      {/* Slider */}
+      <div>
+        <div className="text-xs text-gray-500 mb-1">Creativity (1..9)</div>
+        <input type="range" min={1} max={9} step={1}
+               className="w-full"
+               value={slider} onChange={e=>setSlider(Number(e.target.value))}/>
+        <div className="text-[11px] text-gray-400">Value: {slider}</div>
+      </div>
 
-        <div className="rounded-xl shadow border bg-white p-4 relative">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold text-gray-800">Tailored CV</h3>
-            <div className="flex gap-2">
-              <button className={btn} onClick={async()=>{await navigator.clipboard?.writeText(tailored); toast.push("הועתק ללוח","success");}}>Copy</button>
-              <button className={btn} onClick={()=>exportDocx("tailored_cv.docx","Tailored CV",tailored)}>Export DOCX</button>
-            </div>
-          </div>
-          {running && !hasRun ? <Skeleton className="h-48"/> :
-            <textarea dir="auto" className="w-full rounded-lg border px-3 py-2 text-sm h-48" value={tailored} onChange={(e)=>setTailored(e.target.value)}/>}
-          <LoadingOverlay show={running && hasRun}/>
+      {/* Model & Target */}
+      <div className="space-y-2">
+        <div>
+          <div className="text-xs text-gray-500 mb-1">Model</div>
+          <select className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={model} onChange={(e)=>setModel(e.target.value)}>
+            <option value="openai">ChatGPT (OpenAI)</option>
+            <option value="gemini">Gemini (Google)</option>
+            <option value="claude">Claude (Anthropic)</option>
+          </select>
+        </div>
+        <div>
+          <div className="text-xs text-gray-500 mb-1">Target</div>
+          <select className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={target} onChange={(e)=>setTarget(e.target.value)}>
+            <option value="all">All</option>
+            <option value="cover">Cover Letter</option>
+            <option value="cv">Tailored CV</option>
+          </select>
         </div>
       </div>
     </div>
-  );
-}
+
+    <div className="flex justify-end mt-4">
+      <button className={btnPrimaryOutline} onClick={run} disabled={running}>
+        {running ? "Running…" : "Run"}
+      </button>
+    </div>
+
+    <div className="text-[11px] text-gray-400 mt-3">
+      Server via <code>/api/openai-match</code>. URL proxy via <code>/api/fetch-url</code>. Chat via <code>/api/openai-chat</code>.
+    </div>
+
+    <LoadingOverlay show={running && hasRun}/>
+  </div>
+
+  {/* RIGHT: Live Assistant */}
+  <LiveAssistant
+    visible={hasRun}
+    jobDesc={jd}
+    userCV={cv}
+    scores={scores}
+    analysis={analysis}
+    onApplyCover={text=>setCover(t=>`${t}\n\n---\nAssistant suggestions:\n${text}`)}
+    onApplyCV={text=>setTailored(t=>`${t}\n\n---\nAssistant suggestions:\n${text}`)}
+  />
+</div>
+
+{/* Outputs */}
+<div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+  <div className="rounded-xl shadow border bg-white p-4 relative">
+    <div className="flex items-center justify-between mb-2">
+      <h3 className="font-semibold text-gray-800">Cover Letter</h3>
+      <div className="flex gap-2">
+        <button className={btn} onClick={async()=>{await navigator.clipboard?.writeText(cover); toast.push("הועתק ללוח","success");}}>Copy</button>
+        <button className={btn} onClick={()=>exportDocx("cover_letter.docx","Cover Letter",cover)}>Export DOCX</button>
+      </div>
+    </div>
+    {running && !hasRun ? <Skeleton className="h-48"/> :
+      <textarea dir="auto" className="w-full rounded-lg border px-3 py-2 text-sm h-48" value={cover} onChange={(e)=>setCover(e.target.value)}/>}
+    <LoadingOverlay show={running && hasRun}/>
+  </div>
+
+  <div className="rounded-xl shadow border bg-white p-4 relative">
+    <div className="flex items-center justify-between mb-2">
+      <h3 className="font-semibold text-gray-800">Tailored CV</h3>
+      <div className="flex gap-2">
+        <button className={btn} onClick={async()=>{await navigator.clipboard?.writeText(tailored); toast.push("הועתק ללוח","success");}}>Copy</button>
+        <button className={btn} onClick={()=>exportDocx("tailored_cv.docx","Tailored CV",tailored)}>Export DOCX</button>
+      </div>
+    </div>
+    {running && !hasRun ? <Skeleton className="h-48"/> :
+      <textarea dir="auto" className="w-full rounded-lg border px-3 py-2 text-sm h-48" value={tailored} onChange={(e)=>setTailored(e.target.value)}/>}
+    <LoadingOverlay show={running && hasRun}/>
+  </div>
+</div>
+</div>  {/* ← סוגר את המעטפת הראשית של העמוד */}
+);
+}       {/* סוף קומפוננטת CVMatcher */}
