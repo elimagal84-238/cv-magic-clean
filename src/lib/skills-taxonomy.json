@@ -1,12 +1,18 @@
-// src/lib/skills-taxonomy.json
 [
-  "javascript","typescript","react","node","express","nextjs","html","css","sass",
-  "python","django","flask","pandas","numpy","scikit-learn",
-  "java","spring","kotlin",
-  "c#","dotnet",".net","asp.net",
-  "sql","postgres","mysql","mongodb","redis",
-  "aws","gcp","azure","docker","kubernetes","terraform",
-  "git","ci","cd","jira","confluence",
-  "analytics","ga4","seo","sem","content",
-  "matlab","r","tableau","powerbi"
+  "javascript","typescript","react","next.js","node.js","express","python","django","flask",
+  "sql","postgresql","mysql","mongodb","redis","elasticsearch",
+  "aws","gcp","azure","docker","kubernetes","linux","bash","ci/cd","git","github","gitlab",
+  "html","css","sass","tailwind","styled-components",
+  "graphql","rest","grpc","websocket","oauth","jwt",
+  "c++","c#","java",".net","go","rust","swift","kotlin","php","ruby",
+  "pandas","numpy","scikit-learn","pytorch","tensorflow",
+  "ml","nlp","computer-vision","data-engineering","etl","airflow","dbt","spark","hadoop",
+  "bi","tableau","power-bi","looker","excel","vba",
+  "product-management","project-management","scrum","agile","jira","confluence",
+  "ui/ux","figma","photoshop","illustrator",
+  "seo","sem","ppc","marketing-automation","crm","salesforce","hubspot",
+  "cybersecurity","siem","soc","iam","sso","saml",
+  "microservices","event-driven","message-queues","kafka","rabbitmq","sqs",
+  "testing","jest","mocha","chai","cypress","playwright","storybook",
+  "monitoring","prometheus","grafana","datadog","newrelic","sentry"
 ]
