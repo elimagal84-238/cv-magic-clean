@@ -1,123 +1,102 @@
 // pages/api/score-match.js
-// Lightweight deterministic scorer: keywords, sections, skills taxonomy,
-// cosine on term frequencies, and simple penalties.
+// דטרמיניסטי: מילות מפתח/דרישות/מיומנויות/וותק — נשמר פלט שמות שדות זהה ל-UI.
 
-export const config = {
-  api: { bodyParser: { sizeLimit: "2mb" } },
-};
+export const config = { api: { bodyParser: { sizeLimit: "2mb" } } };
 
-import skillsTaxonomy from "../../src/lib/skills-taxonomy.json";
-
-const STOP = new Set("a,an,the,of,and,or,to,in,on,for,with,by,at,as,from,into,over,under,about,across,is,are,was,were,be,been,being".split(","));
-const NEG = new Set(["no experience","lack","none","not familiar","without"]);
-
-function normText(s = "") {
-  return String(s).toLowerCase().replace(/[^a-z0-9\s\-\+\.#]/g, " ").replace(/\s+/g, " ").trim();
-}
-function tokens(s) {
-  return normText(s).split(" ").filter(t => t && !STOP.has(t));
-}
-function tfVec(arr) {
-  const m = new Map();
-  for (const t of arr) m.set(t, (m.get(t) || 0) + 1);
-  return m;
-}
-function cosine(a, b) {
-  let dot = 0, na = 0, nb = 0;
-  for (const [k, v] of a) {
-    if (b.has(k)) dot += v * b.get(k);
-    na += v * v;
-  }
-  for (const v of b.values()) nb += v * v;
-  if (!na || !nb) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-function sectionSlice(cvText) {
-  const t = normText(cvText);
-  const sec = (label) => {
-    const re = new RegExp(`\\b${label}\\b[:\\-\\s]*([\\s\\S]*?)(?=\\n\\s*(summary|skills|experience|work|projects|education|certifications)\\b|$)`, "i");
-    const m = t.match(re);
-    return m ? m[1] : "";
-  };
-  return {
-    summary: sec("summary"),
-    skills: sec("skills"),
-    experience: sec("experience|work|projects"),
-    education: sec("education"),
-  };
-}
-
-function extractSkills(txt) {
-  const t = normText(txt);
-  const found = [];
-  for (const s of skillsTaxonomy) {
-    const k = s.toLowerCase();
-    // allow symbols like c++, .net
-    const re = new RegExp(`(^|\\W)${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\W)`, "i");
-    if (re.test(t)) found.push(s);
-  }
-  return new Set(found);
-}
-
-export default function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
   try {
-    const { cvText = "", jdText = "" } = req.body || {};
-    if (!cvText || !jdText) return res.status(400).json({ error: "Missing cvText or jdText" });
+    const { job_description = "", cv_text = "" } = req.body || {};
+    const jd = String(job_description || "").slice(0, 50_000);
+    const cv = String(cv_text || "").slice(0, 50_000);
 
-    const cvToks = tokens(cvText);
-    const jdToks = tokens(jdText);
+    const clamp100 = (x) => Math.max(0, Math.min(100, Math.round(Number(x || 0))));
+    const norm = (s) => String(s || "").toLowerCase();
+    const tokenize = (s) =>
+      norm(s).replace(/[^\p{L}\p{N}\s\+\.\-#]/gu, " ").split(/\s+/).filter(w => w.length > 2);
 
-    const cvVec = tfVec(cvToks);
-    const jdVec = tfVec(jdToks);
+    const uniq = (a) => [...new Set(a)];
+    const setOf = (a) => new Set(a);
+    const intersect = (A, B) => [...A].filter(x => B.has(x));
+    const minus = (A, B) => [...A].filter(x => !B.has(x));
 
-    // Base similarity
-    const baseSim = cosine(cvVec, jdVec); // 0..1
+    const jdToksArr = tokenize(jd), cvToksArr = tokenize(cv);
+    const jdSet = setOf(jdToksArr), cvSet = setOf(cvToksArr);
 
-    // Skills overlap
-    const cvSkills = extractSkills(cvText);
-    const jdSkills = extractSkills(jdText);
-    const inter = new Set([...jdSkills].filter(x => cvSkills.has(x)));
-    const skillsRecall = jdSkills.size ? inter.size / jdSkills.size : 0;
+    // Keywords (שכיחות בסיסית)
+    const freq = Object.create(null);
+    for (const w of jdToksArr) freq[w] = (freq[w] || 0) + 1;
+    const topKeywords = new Set(Object.entries(freq).sort((a,b)=>b[1]-a[1]).map(([w])=>w).slice(0, 30));
+    const kwMatched = intersect(topKeywords, cvSet);
+    const kwMissing = minus(topKeywords, cvSet);
+    const keywords_match = clamp100((kwMatched.length / Math.max(1, topKeywords.size)) * 100);
 
-    // Section boosts: experience & skills alignment
-    const cvSec = sectionSlice(cvText);
-    const expCos = cosine(tfVec(tokens(cvSec.experience)), tfVec(jdVec));
-    const skillCos = cosine(tfVec(tokens(cvSec.skills)), tfVec(tfVec(tokens([...jdSkills].join(" ")))));
-    const eduCos = cosine(tfVec(tokens(cvSec.education)), jdVec);
+    // Requirements — קווים שמתחילים בתבליטים/דרישות
+    const reqLines = jd.split(/\n+/)
+      .map(s => s.trim())
+      .filter(s => /^[-*•]/.test(s) || /(^|\s)(דרישות|requirements?)\b/i.test(s));
+    let reqHit = 0;
+    const reqExpl = [];
+    for (const line of reqLines) {
+      const keys = uniq(tokenize(line)).slice(0, 6);
+      const has = keys.some(w => cvSet.has(w));
+      if (has) reqHit++;
+      reqExpl.push({ text: line.slice(0, 300), matched: !!has, probe: keys });
+    }
+    const requirements_match = clamp100((reqHit / Math.max(1, reqLines.length)) * 100);
 
-    // Negative cues penalty
-    const negHits = [...NEG].reduce((acc, phrase) => acc + (normText(cvText).includes(phrase) ? 1 : 0), 0);
-    const penalty = Math.min(0.15, negHits * 0.05);
+    // Skills — רשימת רמזים קצרה (ניתן להרחיב לפי הצורך)
+    const HINT_SKILLS = [
+      "excel","sql","python","javascript","typescript","node","react","next","docker","kubernetes",
+      "communication","leadership","sales","marketing","crm","hubspot","figma","photoshop","seo","sem","ppc","kpi",
+      "jira","agile","scrum","analysis","analytics",
+      "אקסל","פייתון","ג'אווהסקריפט","דאטה","מכירות","שיווק","ניהול","פרויקטים","ענן","דוקר","קוברנטיס"
+    ];
+    const jdSkills = HINT_SKILLS.filter(k => norm(jd).includes(k));
+    const cvSkills = HINT_SKILLS.filter(k => norm(cv).includes(k));
+    const skillSetJD = setOf(jdSkills), skillSetCV = setOf(cvSkills);
+    const skillMatched = intersect(skillSetJD, skillSetCV);
+    const skillMissing = minus(skillSetJD, skillSetCV);
+    const skills_match = clamp100((skillMatched.length / Math.max(1, skillSetJD.size)) * 100);
 
-    // Weighted blend
-    const wBase = 0.45, wSkills = 0.30, wExp = 0.18, wEdu = 0.07;
-    let total = wBase * baseSim + wSkills * skillsRecall + wExp * expCos + wEdu * eduCos;
-    total = Math.max(0, total - penalty);
-    const toPct = (x) => Math.round(Math.max(0, Math.min(1, x)) * 100);
+    // Experience (years) — ניחוש עדין
+    const years = (s) => {
+      const m = norm(s).match(/(\d+)\s*(?:שנ(?:ה|ים)|years?)/);
+      return m ? Number(m[1]) : 0;
+    };
+    const jdYears = years(jd), cvYears = years(cv);
+    const experience_match = clamp100(jdYears ? (cvYears / jdYears) * 100 : keywords_match);
 
-    const breakdown = {
-      base_similarity: toPct(baseSim),
-      skills_match: toPct(skillsRecall),
-      experience_match: toPct(expCos),
-      education_match: toPct(eduCos),
-      penalty_negatives: Math.round(penalty * 100),
+    // Overall
+    const match_score = clamp100(
+      0.35 * keywords_match + 0.30 * requirements_match + 0.20 * skills_match + 0.15 * experience_match
+    );
+
+    const analysis = {
+      summary: [
+        `Keywords: ${keywords_match}% (${kwMatched.length}/${Math.max(1, topKeywords.size)})`,
+        `Requirements: ${requirements_match}% (${reqHit}/${Math.max(1, reqLines.length)})`,
+        `Skills: ${skills_match}% (${skillMatched.length}/${Math.max(1, skillSetJD.size)})`,
+        `Experience: ${experience_match}% (cv≈${cvYears}y vs jd≈${jdYears}y)`,
+      ],
+      keywords: { top_considered: [...topKeywords].slice(0, 20), matched: kwMatched.slice(0, 20), missing: kwMissing.slice(0, 20) },
+      requirements: { total: reqLines.length, matched: reqHit, details: reqExpl.slice(0, 20) },
+      skills: { jd: jdSkills.slice(0, 20), cv: cvSkills.slice(0, 20), matched: skillMatched.slice(0, 20), missing: skillMissing.slice(0, 20) },
+      experience: { jd_years: jdYears || 0, cv_years: cvYears || 0 },
     };
 
+    // נשמר בדיוק שמות השדות שה-UI ממזג עם תוצאות ה-LLM
     return res.status(200).json({
-      ok: true,
-      match_score: toPct(total),
-      breakdown,
-      details: {
-        jd_skills_required: [...jdSkills],
-        cv_skills_found: [...cvSkills],
-        cv_skills_covered: [...inter],
-      },
+      match_score,
+      keywords_match,
+      requirements_match,
+      experience_match,
+      skills_match,
+      analysis,
+      model: "deterministic",
     });
   } catch (e) {
-    console.error("score-match error", e);
-    return res.status(500).json({ error: "Server error", details: String(e?.message || e) });
+    console.error("score-match error:", e);
+    return res.status(500).json({ error: e?.message || "server error" });
   }
 }
