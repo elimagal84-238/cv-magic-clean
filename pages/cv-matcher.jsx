@@ -289,7 +289,7 @@ export default function CVMatcher(){
     if(which==="cv"&&cvHist.length>1){ const last=cvHist[cvHist.length-2]; setCV(last); setCvHist(h=>h.slice(0,-1)); toast.push("שוחזר טקסט קורות החיים","info"); }
   }
 
-  // REPLACE old run() with this version
+ // === REPLACE run() ===
 async function run(){
   setRunning(true);
   try{
@@ -308,50 +308,74 @@ async function run(){
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    let j;
-    try { j = await resp.json(); } catch { j = null; }
-    if(!resp.ok) throw new Error((j && j.error) || `HTTP ${resp.status}`);
 
-    // --- tolerant parsing helpers ---
+    let j = null;
+    try { j = await resp.json(); } catch { /* ignore */ }
+    if (!resp.ok) throw new Error((j && j.error) || `HTTP ${resp.status}`);
+
+    // ---------- helpers ----------
     const parseNum = (v) => {
       if (v == null) return 0;
       if (typeof v === "object" && "value" in v) v = v.value;
-      const n = typeof v === "string"
-        ? parseFloat(String(v).replace(/[^\d.-]/g, ""))
-        : Number(v);
+      const n = typeof v === "string" ? parseFloat(v.replace(/[^\d.-]/g, "")) : Number(v);
       return Number.isFinite(n) ? n : 0;
     };
-    const get = (obj, ...keys) => {
-      for (const k of keys) {
-        const val = k.split(".").reduce((o, kk) => (o && o[kk] != null ? o[kk] : undefined), obj);
-        if (val != null) return val;
+
+    // מחפש מפתח שמתאים ל-regex גם ברמה הראשונה וגם באובייקטים פנימיים (למשל scores)
+    const findBy = (obj, regex) => {
+      if (!obj || typeof obj !== "object") return 0;
+      for (const [k, v] of Object.entries(obj)) {
+        if (regex.test(k)) { const n = parseNum(v); if (n || n === 0) return n; }
+      }
+      for (const v of Object.values(obj)) {
+        if (v && typeof v === "object") {
+          for (const [k2, v2] of Object.entries(v)) {
+            if (regex.test(k2)) { const n = parseNum(v2); if (n || n === 0) return n; }
+          }
+        }
       }
       return 0;
     };
 
+    // ---------- scores (עמיד לשמות שונים ו"לחוזים" עם %) ----------
     const nextScores = {
-      match:        clamp100(parseNum(get(j, "match_score", "match", "scores.match"))),
-      keywords:     clamp100(parseNum(get(j, "keywords_match", "keywords", "scores.keywords"))),
-      requirements: clamp100(parseNum(get(j, "requirements_match", "requirements", "scores.requirements"))),
-      experience:   clamp100(parseNum(get(j, "experience_match", "experience", "scores.experience"))),
-      skills:       clamp100(parseNum(get(j, "skills_match", "skills", "scores.skills"))),
+      match:        clamp100(findBy(j, /^(match(_score)?|overall|total|score)$/i)),
+      keywords:     clamp100(findBy(j, /^(keywords?|keywords?_(match|score)?|terms?|phrases?)$/i)),
+      requirements: clamp100(findBy(j, /^(requirements?|req(uirements)?_(match|score)?|reqs?)$/i)),
+      experience:   clamp100(findBy(j, /^(experience|experience_(match|score)?|xp)$/i)),
+      skills:       clamp100(findBy(j, /^(skills?|skills?_(match|score)?|abilities?)$/i)),
     };
+
+    // ---------- texts (ניסיון בשם אלטרנטיבי) ----------
+    const pickText = (obj, candidates) => {
+      for (const k of candidates) if (obj && obj[k] != null) return String(obj[k] ?? "");
+      // נסה גם בתוך שדות פנימיים (data/results/payload)
+      for (const v of Object.values(obj || {})) {
+        if (v && typeof v === "object") {
+          for (const k of candidates) if (v[k] != null) return String(v[k] ?? "");
+        }
+      }
+      return "";
+    };
+
+    const coverText    = pickText(j, ["cover_letter","coverLetter","cover","letter"]);
+    const tailoredText = pickText(j, ["tailored_cv","tailoredCV","tailored","cv","resume"]);
 
     console.log("[/api/openai-match] raw:", j, "parsedScores:", nextScores);
 
     setScores(nextScores);
-    setCover(String(j?.cover_letter ?? ""));
-    setTailored(String(j?.tailored_cv ?? ""));
+    setCover(coverText);
+    setTailored(tailoredText);
     setHasRun(true);
 
-    setRunIdx(x => {
+    setRunIdx((x) => {
       const n = (Number(x || 0) + 1) % 99999;
       saveLS(LS.runIdx, n);
       return n;
     });
 
     toast.push("ההרצה הסתיימה בהצלחה", "success");
-  } catch(e){
+  } catch (e) {
     console.error("run() error:", e);
     toast.push("שגיאה בהרצה: " + (e?.message || "unknown"), "error", 5000);
   } finally {
