@@ -1,200 +1,112 @@
 // pages/api/openai-match.js
-// Works with OpenAI Responses API (text.format + json_schema).
-// Returns ATS-style scores + cover letter + tailored CV.
+// Generates tailored CV & cover letter based on CV + Job Description.
+// Uses OpenAI Responses API with a strict JSON schema.
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+export const config = {
+  api: { bodyParser: { sizeLimit: "2mb" } },
+};
 
-  try {
-    const {
-      job_description = "",
-      cv_text = "",
-      target = "all",                 // "all" | "cover" | "cv"
-      model = "gpt-4.1-mini",
-      temperature = 0.3,
-    } = req.body || {};
+const OPENAI_URL = "https://api.openai.com/v1/responses";
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-    }
+function volumeToParams(v = 5) {
+  const clamped = Math.max(1, Math.min(9, Number(v) || 5));
+  // gentle ramp: 1→0.1 … 9→0.9
+  const temperature = 0.1 + (clamped - 1) * (0.8 / 8);
+  const freqPenalty = (clamped - 1) * (0.8 / 8);
+  return { temperature, frequency_penalty: Number(freqPenalty.toFixed(2)) };
+}
 
-    // Simple language detection (Hebrew vs. English)
-    const isHeb = /[\u0590-\u05FF]/.test(`${job_description}\n${cv_text}`);
-
-    // ---- Strict JSON schema (model MUST return this) ----
-    const schema = {
+const responseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "TailoredCVResponse",
+    schema: {
       type: "object",
       additionalProperties: false,
-      required: [
-        "match_score",
-        "keywords_match",
-        "requirements_match",
-        "experience_match",
-        "skills_match",
-        "cover_letter",
-        "tailored_cv",
-      ],
       properties: {
-        match_score:        { type: "integer", minimum: 0, maximum: 100 },
-        keywords_match:     { type: "integer", minimum: 0, maximum: 100 },
-        requirements_match: { type: "integer", minimum: 0, maximum: 100 },
-        experience_match:   { type: "integer", minimum: 0, maximum: 100 },
-        skills_match:       { type: "integer", minimum: 0, maximum: 100 },
-        cover_letter:       { type: "string" },
-        tailored_cv:        { type: "string" },
+        tailored_cv: { type: "string" },
+        cover_letter: { type: "string" },
+        suggestions: {
+          type: "array",
+          items: { type: "string" },
+        },
+        highlights: {
+          type: "array",
+          items: { type: "string" },
+        },
       },
-    };
+      required: ["tailored_cv", "cover_letter", "suggestions"],
+    },
+    strict: true,
+  },
+};
 
-    // ---- System instructions ----
-    const SYSTEM = isHeb
-      ? `אתה עוזר ATS המשווה מודעת דרושים לקורות־חיים, מחזיר ציונים (0–100) + מכתב מקדים + קו״ח מותאמים.
-• כתוב בשפת המודעה (כאן: עברית).
-• אל תמציא תארים/מעסיקים/תפקידים שלא הופיעו בקו״ח.
-• שמור על פורמט ידידותי ל-ATS: כותרות ברורות, bullets קצרים, הישגים מדידים.
-• החזר אך ורק JSON לפי הסכמה.`
-      : `You are an ATS assistant that matches a job post to a resume and returns scores (0–100), a cover letter and a tailored resume.
-• Write in the JD language (here: English).
-• Do NOT invent degrees/employers/roles not present in the source CV.
-• Use ATS-friendly formatting.
-• Return ONLY JSON per the schema.`;
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  try {
+    const { cvText, jdText, volume = 5, model = DEFAULT_MODEL, target = "cv+cover" } = req.body || {};
+    if (!cvText || !jdText) return res.status(400).json({ error: "Missing cvText or jdText" });
 
-    const CV_TEMPLATE = isHeb
-      ? `# פרטים אישיים
-שם מלא: <אם חסר, השאר ריק>
-אימייל | טלפון | מיקום | קישורים
+    const { temperature, frequency_penalty } = volumeToParams(volume);
 
-# תקציר מקצועי
-• 2–4 שורות שמדגישות התאמה ישירה.
-
-# מיומנויות מפתח (ATS)
-• מיומנות/כלי — רמה / שנות ניסיון
-• …
-
-# ניסיון תעסוקתי
-תפקיד | חברה | עיר/היברידי | שנים (YYYY–YYYY)
-• הישג מדיד 1
-• הישג מדיד 2
-• התאמת מילות מפתח
-
-# השכלה ותעודות
-• תואר/קורס | מוסד | שנים
-
-# שפות
-• עברית — רמה | אנגלית — רמה`
-      : `# Contact
-Full Name: <empty if unknown>
-Email | Phone | Location | Links
-
-# Professional Summary
-• 2–4 lines of direct fit.
-
-# Core Skills (ATS)
-• Skill/Tool — level / years
-• …
-
-# Experience
-Role | Company | City/Hybrid | Years (YYYY–YYYY)
-• Measurable outcome 1
-• Measurable outcome 2
-• JD keyword alignment
-
-# Education & Certifications
-• Degree/Course | Institution | Years
-
-# Languages
-• English — level | Others — level`;
-
-    const FOCUS =
-      target === "cv"
-        ? (isHeb ? "התמקד ב־tailored_cv; מכתב מינימלי." : "Focus on tailored_cv; cover letter minimal.")
-        : target === "cover"
-        ? (isHeb ? "התמקד במכתב; קו״ח מינימליים."       : "Focus on cover_letter; resume minimal.")
-        : (isHeb ? "החזר גם מכתב וגם קו״ח מלאים."       : "Return both cover_letter and tailored_cv.");
-
-    const INPUT = [
-      isHeb ? "מודעת דרושים:" : "Job Description:",
-      job_description,
-      "",
-      isHeb ? "קורות־חיים מקוריים:" : "Original CV:",
-      cv_text,
-      "",
-      isHeb
-        ? "הוראות: בצע התאמה בסגנון ATS והחזר ציונים 0..100 בשדות הנכונים; מכתב מקדים (~180 מילים); בנה קו״ח לפי התבנית:"
-        : "Instructions: ATS-style scoring 0..100; concise cover letter (~180 words); build resume exactly per template:",
-      CV_TEMPLATE,
-      "",
-      FOCUS,
-      "",
-      isHeb ? "חשוב: החזר JSON בלבד לפי הסכמה." : "Important: return JSON only per the schema.",
+    const system = [
+      "You are CV-Magic: a precise ATS-aware CV rewriter.",
+      "Rules:",
+      "- Never invent employment or degrees; rephrase only.",
+      "- Keep structure clean: Header, Summary, Skills, Experience (bullets with impact), Education, Certifications.",
+      "- Mirror JD terminology safely (synonyms ok; no fabrication).",
+      "- Optimize for clarity, quantification, and ATS keyword coverage.",
+      "- If JD demands skills absent from CV, add a SUGGESTIONS list (not inside the CV).",
     ].join("\n");
 
-    // ---- Responses API call (text.format + json_schema) ----
-    const r = await fetch("https://api.openai.com/v1/responses", {
+    const user = [
+      "=== JOB DESCRIPTION ===",
+      jdText,
+      "\n=== ORIGINAL CV ===",
+      cvText,
+      "\n=== TARGET ===",
+      String(target),
+    ].join("\n");
+
+    const r = await fetch(OPENAI_URL, {
       method: "POST",
       headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model,
+        input: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        response_format: responseFormat,
         temperature,
-        text: {
-          format: {
-            type: "json_schema",
-            name: "AtsResult",
-            schema,
-            strict: true,
-          },
-        },
-        input: `${SYSTEM}\n\n${INPUT}`,
-        max_output_tokens: 3000,
+        frequency_penalty,
       }),
     });
 
-    const data = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const msg = data?.error?.message || `OpenAI error (${r.status})`;
-      return res.status(400).json({ error: msg });
+      const text = await r.text().catch(() => "");
+      return res.status(r.status).json({ error: "OpenAI error", details: text });
     }
 
-    // ---- SAFE extraction (בלי לערבב ?? עם ||) ----
-    let raw = "";
-    if (typeof data?.output_text === "string") {
-      raw = data.output_text;
-    } else if (Array.isArray(data?.content)) {
-      raw = data.content.map((c) => (c?.text ?? "")).join("\n");
-    } else if (Array.isArray(data?.output)) {
-      raw = data.output
-        .map((o) =>
-          Array.isArray(o?.content) ? o.content.map((c) => (c?.text ?? "")).join("\n") : ""
-        )
-        .join("\n");
-    }
+    const data = await r.json();
+    // Responses API returns .output_text (for text) and/or .output (for structured)
+    const parsed =
+      data.output?.[0]?.content?.[0]?.text
+        ? JSON.parse(data.output[0].content[0].text)
+        : data.output_parsed || data; // fallback
 
-    let payload;
-    try {
-      payload = JSON.parse(String(raw || ""));
-    } catch {
-      // Fallback skeleton to avoid crashing the UI
-      payload = {
-        match_score: 0,
-        keywords_match: 0,
-        requirements_match: 0,
-        experience_match: 0,
-        skills_match: 0,
-        cover_letter: "",
-        tailored_cv: "",
-      };
-    }
-
-    // Respect target
-    if (target === "cv") payload.cover_letter = "";
-    if (target === "cover") payload.tailored_cv = "";
-
-    return res.status(200).json(payload);
-  } catch (e) {
-    return res.status(400).json({ error: e?.message || "OpenAI request failed" });
+    return res.status(200).json({
+      ok: true,
+      model,
+      params: { temperature, frequency_penalty },
+      result: parsed,
+    });
+  } catch (err) {
+    console.error("openai-match error", err);
+    return res.status(500).json({ error: "Server error", details: String(err && err.message || err) });
   }
 }
