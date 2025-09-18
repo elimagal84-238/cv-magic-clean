@@ -289,10 +289,11 @@ export default function CVMatcher(){
     if(which==="cv"&&cvHist.length>1){ const last=cvHist[cvHist.length-2]; setCV(last); setCvHist(h=>h.slice(0,-1)); toast.push("שוחזר טקסט קורות החיים","info"); }
   }
 
- // === REPLACE run() ===
+// pages/cv-matcher.jsx — inside CVMatcher
 async function run(){
   setRunning(true);
   try{
+    // 1) קבל טקסטים+פלט מה-LLM (נשאר כפי שהיה אצלך)
     const body = {
       job_description: jd,
       cv_text: cv,
@@ -302,16 +303,44 @@ async function run(){
       model_pref: model,
       target,
     };
-
-    const resp = await fetch("/api/openai-match", {
+    const r1 = await fetch("/api/openai-match", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    const j1 = await r1.json();
+    if(!r1.ok) throw new Error(j1?.error || "openai-match failed");
 
-    let j = null;
-    try { j = await resp.json(); } catch { /* ignore */ }
-    if (!resp.ok) throw new Error((j && j.error) || `HTTP ${resp.status}`);
+    // 2) חשב מדדים אמיתיים (ללא LLM) — לא משפיע על איכות ה-Cover/CV
+    const r2 = await fetch("/api/score-match", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ job_description: jd, cv_text: cv }),
+    });
+    const j2 = await r2.json();
+    if(!r2.ok) throw new Error(j2?.error || "score-match failed");
+
+    // 3) הזנת UI
+    setScores({
+      match:        clamp100(j2.match_score),
+      keywords:     clamp100(j2.keywords_match),
+      requirements: clamp100(j2.requirements_match),
+      experience:   clamp100(j2.experience_match),
+      skills:       clamp100(j2.skills_match),
+    });
+    setCover(String(j1.cover_letter || ""));
+    setTailored(String(j1.tailored_cv || ""));
+    setHasRun(true);
+
+    setRunIdx(x => { const n=(Number(x||0)+1)%99999; saveLS(LS.runIdx,n); return n; });
+    toast.push("ההרצה הסתיימה בהצלחה", "success");
+  } catch(e){
+    console.error("run() error:", e);
+    toast.push("שגיאה בהרצה: " + (e?.message || "unknown"), "error", 5000);
+  } finally {
+    setRunning(false);
+  }
+}
 
     // ---------- helpers ----------
     const parseNum = (v) => {
