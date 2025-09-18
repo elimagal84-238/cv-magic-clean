@@ -19,7 +19,11 @@ const LS = { cv:"cvMagic.cvText", jd:"cvMagic.jdText", cvHist:"cvMagic.cvHist", 
 const ROLE_PRESETS = { Surgeon:{min:0.1,max:0.4,step:0.05}, Accountant:{min:0.15,max:0.45,step:0.05}, "Product Manager":{min:0.3,max:0.7,step:0.07}, Copywriter:{min:0.4,max:0.9,step:0.1} };
 const FILE_SIZE_LIMIT_MB = 10;
 const ACCEPT_MIME = ".pdf,.docx,.txt,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const clamp100 = (x)=>Math.max(0,Math.min(100,Math.round(Number(x||0))));
+const clamp100 = (x) => {
+  const n = typeof x === "string" ? parseFloat(String(x).replace(/[^\d.-]/g, "")) : Number(x);
+  const v = Number.isFinite(n) ? n : 0;
+  return Math.max(0, Math.min(100, Math.round(v)));
+};
 const scoreColor = (p)=>p>=67?"text-green-600":p>=34?"text-yellow-600":"text-red-600";
 const cn=(...xs)=>xs.filter(Boolean).join(" ");
 const saveLS=(k,v)=>{try{localStorage.setItem(k,typeof v==="string"?v:JSON.stringify(v));}catch{}};
