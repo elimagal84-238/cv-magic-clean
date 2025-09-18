@@ -1,181 +1,296 @@
 // pages/api/openai-match.js
-// Node Next.js API Route
-//
-// ────────────────────────────────────────────────────────────────────────────────
-// חשוב: עדכן נתיבי ייבוא אם המבנה אצלך שונה.
-// לדוגמה, אם שמרת את normalize ב־"lib/normalize.js", שנה את הנתיב בהתאם.
-// ────────────────────────────────────────────────────────────────────────────────
-import { normalizeCV, normalizeJD } from "../../src/utils/normalize";
-import { atsScore } from "../../lib/ats-scoring";
-
-import OpenAI from "openai";
-
-// כלי עזר קטנים
-const clamp01 = (x) => Math.max(0, Math.min(1, x ?? 0));
-const rolePreset = (name = "General") => {
-  // אפשר לכייל פה טמפרטורות/התנהגויות לפי פריסט
-  // נשאיר ברירת מחדל פשוטה
-  return { min: 0.4, max: 0.9, step: 0.1 };
-};
+// Node Next.js API Route — real scoring + LLM fallback/merge
 
 export default async function handler(req, res) {
-  try {
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Method not allowed" });
-    }
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
-    // ====== קלט מהלקוח ======
+  try {
+    // ---------- input ----------
     const {
       job_description,
       cv_text,
-      role_preset,        // לדוגמה: "Copywriter" | "Surgeon" | "General"
-      slider,             // 1..9 (מספר שלם מה־UI)
-      run_index,          // לא חובה — לשונות קלה בחישוב טמפ'
-      temperature,        // אם בא מהקליינט — נעדכן/נגשר מול השרת
-      model_pref,         // "chatgpt" | "gemini" | "claude" (כאן נטפל ב-OpenAI)
-      target,             // "all" | "cover" | "cv"
+      role_preset,       // { min, max, step }
+      slider,            // 1..9
+      run_index,
+      temperature,       // optional from client
+      model_pref,        // "chatgpt"|"gemini"|"claude" (נשתמש ב-OpenAI בפועל)
+      target,            // "all"|"cover"|"cv"
     } = req.body || {};
 
-    // ====== ולידציה בסיסית ======
-    if (!job_description || !cv_text) {
-      return res.status(400).json({ error: "Missing job_description or cv_text" });
-    }
+    // ---------- sanitize ----------
+    const jd = String(job_description || "").slice(0, 50_000);
+    const cv = String(cv_text || "").slice(0, 50_000);
+    const runIndex = Number(run_index || 0) || 0;
+    const model = String(model_pref || "chatgpt");
 
-    // ====== גזירת טמפרטורה מהסליידר/פריסט ======
-    const runIndex = Number(run_index || 0);
-    const rp = rolePreset(role_preset);
-    const s = Math.max(rp.min, Math.min(9, Number(slider || 5)));
-    const tFromSlider = rp.min + ((rp.max - rp.min) * (s - 1 + (runIndex % 3) * 0.15)) / 8;
-    const temp = 0.5 * tFromSlider + 0.5 * clamp01(Number(temperature ?? tFromSlider));
+    // temperature נגזר מה־slider ומה־preset (וממוזג עם מה שמגיע מהלקוח)
+    const s = clampInt(Number(slider || 5), 1, 9);
+    const preset = normalizeRolePreset(role_preset);
+    const tFromSlider =
+      preset.min + ((preset.max - preset.min) * (s - 1 + (runIndex % 3) * 0.15)) / 8;
+    const temp = clamp01(0.5 * tFromSlider + 0.5 * clamp01(Number(temperature ?? tFromSlider)));
 
-    // ====== שלב 1: חילוץ לסכימה אחידה ======
-    const parsedJD = normalizeJD(String(job_description).slice(0, 50_000));
-    const parsedCV = normalizeCV(String(cv_text).slice(0, 50_000));
+    // ---------- REAL SCORES (heuristics) ----------
+    // טוקניזציה דו־לשונית בסיסית, סינון תווים לא-אות/ספרה
+    const tokenize = (str) =>
+      String(str || "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2);
 
-    // ====== שלב 2: ניקוד דטרמיניסטי ======
-    const scorePack = atsScore({
-      jd: parsedJD,
-      cv: parsedCV,
-      jobText: job_description,
-      cvText: cv_text,
-    });
+    const jdTokens = new Set(tokenize(jd));
+    const cvTokens = new Set(tokenize(cv));
+    const overlap = [...jdTokens].filter((t) => cvTokens.has(t));
+    const keywords_h = pct(jdTokens.size ? overlap.length / jdTokens.size : 0);
 
-    // נוחות/תאימות ל-UI קיים: גם שדות שטוחים 0..100
-    const flatScores = {
-      keywords: scorePack.keywords_match,
-      requirements: scorePack.requirements_match,
-      experience: scorePack.experience_match,
-      skills: scorePack.skills_match,
-      match: scorePack.match_score,
-      evidence: scorePack.evidence || [],
+    // דרישות: מזהה בולטים/כותרות "דרישות"/"requirements" ובודק התאמה לפי מילות מפתח עיקריות
+    const reqLines = jd
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter((s) => s && (/^[-*•]/.test(s) || /(^|\s)(דרישות|requirements?)\b/i.test(s)));
+
+    const reqMatched = reqLines.filter((line) => {
+      const keys = tokenize(line).slice(0, 6);
+      return keys.some((w) => cvTokens.has(w));
+    }).length;
+
+    const requirements_h = pct(reqLines.length ? reqMatched / reqLines.length : keywords_h / 100);
+
+    // skills: רמזים שכיחים (אפשר להחליף/להרחיב בהמשך)
+    const HINT_SKILLS = [
+      "excel","sql","python","javascript","node","react","typescript","docker","kubernetes",
+      "communication","leadership","sales","marketing","crm","hubspot","figma","photoshop",
+      "seo","sem","ppc","kpi","jira","agile","scrum","analysis","analytics",
+      "אקסל","פייתון","שיווק","מכירות","ניהול","דאטא","תוכן","עיצוב","ביצועים","crm","פרויקטים"
+    ];
+    const jdSkills = HINT_SKILLS.filter((k) => jd.toLowerCase().includes(k));
+    const skillsMatched = jdSkills.filter((k) => cv.toLowerCase().includes(k)).length;
+    const skills_h = pct(jdSkills.length ? skillsMatched / jdSkills.length : keywords_h / 100);
+
+    // ניסיון (שנות ניסיון): חיפוש מספר ליד "שנה/years"
+    const years = (s) => {
+      const m = String(s || "").toLowerCase().match(/(\d+)\s*(?:שנ(?:ה|ים)|years?)/);
+      return m ? Number(m[1]) : 0;
+    };
+    const jdYears = years(jd);
+    const cvYears = years(cv);
+    const experience_h = pct(jdYears ? cvYears / jdYears : keywords_h / 100);
+
+    const match_h = clamp100((keywords_h + requirements_h + skills_h + experience_h) / 4);
+
+    // נכלול גם פירוק JD מינימלי שימושי לצד לקוח
+    const parsed_jd = {
+      lang: /[\u0590-\u05FF]/.test(jd) ? "he" : "en",
+      requirements: reqLines.map((text) => ({ text, weight: 1 })),
+      skills: jdSkills.map((name) => ({ name })),
     };
 
-    // ====== שלב 3: יצירת תוצרים (אופציונלי) ======
-    // אם אתה משתמש ב־/api/openai-chat ליצירה – אפשר להשאיר כאן "".
-    // אחרת, הפונקציה למטה תייצר בעזרת OpenAI אם יש מפתח.
-    const wantCover = !target || target === "all" || target === "cover";
-    const wantCV    = !target || target === "all" || target === "cv";
+    // ---------- LLM call (optional/merge) ----------
+    // נגדיר סכימה ברורה, נאפשר למודל להחזיר ניקוד + טקסטים
+    const schema = `
+{
+  "type": "object",
+  "properties": {
+    "match_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "keywords": { "type": "number", "minimum": 0, "maximum": 100 },
+    "requirements_coverage": { "type": "number", "minimum": 0, "maximum": 100 },
+    "experience": { "type": "number", "minimum": 0, "maximum": 100 },
+    "skills": { "type": "number", "minimum": 0, "maximum": 100 },
+    "tailored_cv": { "type": "string" },
+    "cover_letter": { "type": "string" }
+  },
+  "required": ["match_score","keywords","requirements_coverage","experience","skills","tailored_cv","cover_letter"],
+  "additionalProperties": false
+}`.trim();
 
-    let cover_letter = "";
-    let tailored_cv  = "";
+    const sysPrompt = `
+You are CV-Magic, an ATS-aware assistant.
+Return ONLY JSON that strictly matches the provided schema.
+Scoring rules:
+- match_score is 0..100 and reflects overall fit.
+- keywords / requirements_coverage / experience / skills are each 0..100.
+Be strict: do not exceed bounds; integers or decimals are fine.
+Produce concise but complete "tailored_cv" (bullets allowed) and "cover_letter" (short, targeted).
+Mirror important terminology from the JD while staying truthful to the CV.`.trim();
 
-    if (process.env.OPENAI_API_KEY && String(model_pref || "chatgpt").startsWith("chatgpt")) {
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      if (wantCover) {
-        cover_letter = await generateCoverLetter(client, { job_description, cv_text, temp, scorePack });
-      }
-      if (wantCV) {
-        tailored_cv = await generateTailoredCV(client, { job_description, cv_text, temp, scorePack });
-      }
+    const userPrompt = `
+[JOB DESCRIPTION]
+${jd}
+
+[CV]
+${cv}
+
+[SLIDERS]
+temperature=${temp.toFixed(2)} ; preset=${JSON.stringify(preset)}
+target=${String(target || "all")}
+
+[SCHEMA]
+${schema}
+
+Return ONLY minified JSON that conforms to the schema above.`.trim();
+
+    // ננסה לקרוא ל-OpenAI; אם נכשל—נישאר עם ההיוריסטיקה
+    let llm = null;
+    try {
+      llm = await callOpenAI(sysPrompt, userPrompt, temp);
+      llm = safeParse(llm);
+    } catch {
+      llm = null;
     }
-    // אחרת — אם אין KEY או אתה משתמש בנתיב יצירה אחר — השאר "" וה-UI כבר יטפל.
 
-    // ====== תשובה ללקוח ======
+    // ---------- merge scores ----------
+    const llmScores = {
+      match:        clamp100(llm?.match_score),
+      keywords:     clamp100(llm?.keywords),
+      requirements: clamp100(llm?.requirements_coverage),
+      experience:   clamp100(llm?.experience),
+      skills:       clamp100(llm?.skills),
+    };
+
+    const hasLLM =
+      [llmScores.match, llmScores.keywords, llmScores.requirements, llmScores.experience, llmScores.skills]
+        .some((n) => Number.isFinite(n) && n > 0);
+
+    const heurScores = {
+      match: match_h,
+      keywords: keywords_h,
+      requirements: requirements_h,
+      experience: experience_h,
+      skills: skills_h,
+    };
+
+    // 3 מצבים:
+    // 1) יש LLM → נשתמש בממוצע משוקלל 70% LLM, 30% היוריסטיקה (מייצב תנודות)
+    // 2) אין LLM אבל יש היוריסטיקה → נשתמש בהיוריסטיקה
+    // 3) אין כלום (קצה) → אפסים
+    const blend = (a, b) => clamp100(0.7 * a + 0.3 * b);
+    const finalScores = hasLLM
+      ? {
+          match:        blend(llmScores.match,        heurScores.match),
+          keywords:     blend(llmScores.keywords,     heurScores.keywords),
+          requirements: blend(llmScores.requirements, heurScores.requirements),
+          experience:   blend(llmScores.experience,   heurScores.experience),
+          skills:       blend(llmScores.skills,       heurScores.skills),
+        }
+      : { ...heurScores };
+
+    // טקסטים
+    const cover_letter = String(llm?.cover_letter || defaultCover(jd, cv));
+    const tailored_cv  = String(llm?.tailored_cv  || defaultTailored(jd, cv));
+
+    // ---------- response ----------
     return res.status(200).json({
-      parsed_jd: parsedJD,
-      parsed_cv: parsedCV,
-      scores: flatScores,        // לתצוגת המדדים
-      raw_scores: scorePack,     // אם תרצה להשתמש ב-frontend (evidence וכו')
+      match_score:        finalScores.match,
+      keywords_match:     finalScores.keywords,
+      requirements_match: finalScores.requirements,
+      experience_match:   finalScores.experience,
+      skills_match:       finalScores.skills,
       cover_letter,
       tailored_cv,
-      meta: {
-        role_preset: role_preset || "General",
-        slider: Number(slider || 5),
-        temperature: Number(temp.toFixed(2)),
-        model: "ChatGPT (OpenAI)",
-      },
+      parsed_jd,
+      temperature: temp,
+      model: model,
+      run_index: runIndex,
+      slider: s,
+      role_preset: preset,
+      target: String(target || "all"),
     });
-  } catch (err) {
-    console.error("openai-match error:", err);
-    return res.status(500).json({ error: err?.message || "Server error" });
+  } catch (e) {
+    console.error("openai-match error:", e);
+    return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   יצירת תוצרים עם OpenAI (אופציונלי)
-   אם כבר יש לך endpoint ייעודי ליצירה — אפשר למחוק את החלק הזה.
-   שמרתי פרומפטים קצרים ותכל׳סים, עם כבוד למבנה/תאריכים מה-CV.
-──────────────────────────────────────────────────────────────────────────── */
+/* ===================== utils ===================== */
+function clamp01(x)       { return Math.max(0, Math.min(1, Number(x || 0))); }
+function clamp100(x)      { const n = Number(x); return Math.max(0, Math.min(100, Math.round(Number.isFinite(n) ? n : 0))); }
+function clampInt(x,a,b)  { return Math.max(a, Math.min(b, Math.round(Number(x)||0))); }
+function pct(ratio)       { return clamp100((Number(ratio)||0) * 100); }
 
-async function generateCoverLetter(client, { job_description, cv_text, temp, scorePack }) {
-  const sys = `You are a helpful assistant that writes short, professional cover letters in the user's language.
-Keep the tone concise and positive. Preserve user locale (HE/EN).`;
-  const user = `
-Job Description:
-"""
-${job_description}
-"""
-
-Candidate CV:
-"""
-${cv_text}
-"""
-
-Notes (ATS evidence):
-${(scorePack.evidence || []).map((e, i) => `- ${e}`).join("\n")}
-
-Write a 9–11 line cover letter tailored to the job, using the same language as the job description.
-Do NOT invent dates. Do NOT change names.`;
-
-  const rsp = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: temp,
-    messages: [
-      { role: "system", content: sys },
-      { role: "user", content: user },
-    ],
-  });
-  return rsp.choices?.[0]?.message?.content?.trim() || "";
+function normalizeRolePreset(rp) {
+  const fallback = { min: 0.2, max: 0.8, step: 0.1 };
+  if (!rp || typeof rp !== "object") return fallback;
+  const min  = typeof rp.min  === "number" ? rp.min  : fallback.min;
+  const max  = typeof rp.max  === "number" ? rp.max  : fallback.max;
+  const step = typeof rp.step === "number" ? rp.step : fallback.step;
+  return { min: clamp01(min), max: clamp01(max), step: clamp01(step) };
 }
 
-async function generateTailoredCV(client, { job_description, cv_text, temp, scorePack }) {
-  const sys = `You are a CV editor. Keep structure, dates and chronology as in the original CV.
-Rewrite bullets to match the job, but DO NOT fabricate employment or education.
-Keep the user's language (HE/EN).`;
-  const user = `
-Target Job:
-"""
-${job_description}
-"""
+/* ---------- default text fallbacks ---------- */
+function defaultCover(jd, cv) {
+  return `[Cover Letter]
+Thank you for considering my application. Based on your job description, I highlighted relevant experience and keywords, keeping the tone concise and targeted.
+(Generated locally as a fallback; connect your LLM for richer output.)`;
+}
+function defaultTailored(jd, cv) {
+  return `[Tailored CV]
+- Summary: Focused on the core requirements and keywords in the job ad.
+- Experience: Emphasized relevant projects and measurable impact.
+- Skills: Mirrored terminology from the JD where truthful.
+(Fallback draft; connect your LLM for a richer version.)`;
+}
 
-Original CV:
-"""
-${cv_text}
-"""
+/* ---------- OpenAI call (ChatGPT) ---------- */
+async function callOpenAI(system, user, temperature) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
 
-Important alignment cues:
-${(scorePack.evidence || []).map((e, i) => `- ${e}`).join("\n")}
+  const messages = [
+    { role: "system", content: system },
+    { role: "user",   content: user  },
+  ];
 
-Rewrite the CV content while preserving structure and dates. Keep it one page if possible.
-Use clean bullets, short lines, and measurable outcomes where possible.`;
-
-  const rsp = await client.chat.completions.create({
+  const body = {
     model: "gpt-4o-mini",
-    temperature: temp,
-    messages: [
-      { role: "system", content: sys },
-      { role: "user", content: user },
-    ],
+    messages,
+    temperature: clamp01(temperature),
+    response_format: { type: "json_object" },
+  };
+
+  const json = await postJson("https://api.openai.com/v1/chat/completions", body, {
+    Authorization: `Bearer ${apiKey}`,
   });
-  return rsp.choices?.[0]?.message?.content?.trim() || "";
+
+  return json;
+}
+
+async function postJson(url, body, headers = {}) {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`OpenAI error ${resp.status}: ${t}`);
+  }
+  const j = await resp.json();
+  // החזר טקסט התוכן כמו שהוא (כבר ביקשנו JSON_OBJECT)
+  return j?.choices?.[0]?.message?.content || "{}";
+}
+
+function safeParse(jsonStr) {
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    // תיקון נאיבי: מצא סוגריים החיצוניים הראשונים/אחרונים
+    const i = jsonStr.indexOf("{");
+    const k = jsonStr.lastIndexOf("}");
+    if (i >= 0 && k > i) {
+      try { return JSON.parse(jsonStr.slice(i, k + 1)); } catch {}
+    }
+    // ברירת מחדל בטוחה
+    return {
+      match_score: 0,
+      keywords: 0,
+      requirements_coverage: 0,
+      experience: 0,
+      skills: 0,
+      tailored_cv: "",
+      cover_letter: "",
+    };
+  }
 }
