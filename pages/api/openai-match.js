@@ -1,85 +1,112 @@
 // pages/api/openai-match.js
-// Generates ATS scores + Cover Letter + Tailored CV with a strict template.
+// Unified: strict JSON schema + JD/CV inputs + ATS scores + Cover + Tailored CV.
 
-export const config = {
-  runtime: "edge",
-};
+export default async function handler(req, res) {
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Method not allowed" });
 
-function pickLang(jd, cv) {
-  const text = `${jd || ""}\n${cv || ""}`;
-  return /[\u0590-\u05FF]/.test(text) ? "he" : "en";
-}
+  try {
+    const {
+      job_description = "",
+      cv_text = "",
+      target = "all",          // "all" | "cover" | "cv"
+      model = "gpt-4.1-mini",  // נשאר תואם ל-Responses API
+      temperature = 0.3,
+    } = req.body || {};
 
-function sysPrompt(lang) {
-  const he = lang === "he";
-  return (
-    (he
-      ? "אתה עוזר ATS שמייצר מכתב מקדים וקורות-חיים מותאמים בקפדנות למודעת דרושים.\n"
-      : "You are an ATS assistant that produces a cover letter and strictly ATS-friendly tailored resume.\n") +
-    (he
-      ? "עליך להחזיר JSON בלבד (ללא טקסט נוסף) עם השדות: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.\n"
-      : "Return JSON ONLY (no extra text) with fields: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.\n") +
-    (he
-      ? "הקפד על מספרים בין 0 ל-100 לשדות הציון. הטקסטים בעברית תקנית.\n"
-      : "Scores must be integers 0..100. Texts must be in proper English.\n") +
-    (he
-      ? "לקורות-החיים: שמור פורמט ATS-Ready — כותרות ברורות, bullets קצרים, הישגים מדידים (%/מספרים/טווחי שנים), התאמת מילות מפתח מדרישות המשרה, ללא גרפיקה.\n"
-      : "For the resume: ATS-Ready format — clear headings, short bullets, measurable achievements (%, numbers, years), JD keywords blended, no graphics.\n")
-  );
-}
+    if (!process.env.OPENAI_API_KEY)
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
-function cvTemplate(lang) {
-  const he = lang === "he";
-  if (he) {
-    return `# פרטים אישיים
-שם מלא: <השלם אם חסר מה-CV>
-אימייל: <...> | טלפון: <...> | מיקום: <...> | קישורים: LinkedIn/GitHub (אם רלוונטי)
+    // זיהוי שפה אוטומטי (ברירת מחדל עברית אם יש אותיות עבריות)
+    const isHeb = /[\u0590-\u05FF]/.test(`${job_description}\n${cv_text}`);
+    const LANG = isHeb ? "he" : "en";
+
+    // ---------- JSON Schema מחייב ----------
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "match_score",
+        "keywords_match",
+        "requirements_match",
+        "experience_match",
+        "skills_match",
+        "cover_letter",
+        "tailored_cv",
+      ],
+      properties: {
+        match_score: { type: "integer", minimum: 0, maximum: 100 },
+        keywords_match: { type: "integer", minimum: 0, maximum: 100 },
+        requirements_match: { type: "integer", minimum: 0, maximum: 100 },
+        experience_match: { type: "integer", minimum: 0, maximum: 100 },
+        skills_match: { type: "integer", minimum: 0, maximum: 100 },
+        cover_letter: { type: "string" },
+        tailored_cv: { type: "string" },
+      },
+    };
+
+    // ---------- System header ----------
+    const SYSTEM = isHeb
+      ? `
+אתה עוזר ATS שמבצע התאמה בין מודעת דרושים לקורות-חיים, ומחזיר ציונים (0–100) + מכתב מקדים + קורות-חיים מותאמים.
+תחזיר אך ורק JSON לפי הסכמה. אל תמציא תארים או מקומות עבודה.
+השב בעברית תקנית ובפורמט ידידותי ל-ATS (כותרות ברורות, bullets קצרים, הישגים מדידים).
+    `.trim()
+      : `
+You are an ATS assistant that matches a job post to a resume and returns scores (0–100) + a cover letter + a tailored resume.
+Return JSON ONLY that conforms to the schema. Do not invent degrees or employers.
+Use ATS-friendly formatting (clear headings, short bullets, measurable outcomes).
+    `.trim();
+
+    // ---------- תבנית קו״ח קשיחה ----------
+    const CV_TEMPLATE = isHeb
+      ? `# פרטים אישיים
+שם מלא: <אם חסר, השאר ריק>
+אימייל | טלפון | מיקום | קישורים (LinkedIn/GitHub)
 
 # תקציר מקצועי
-• 2–4 שורות תמצית ממוקדת שמסבירה למה המועמד מתאים למשרה הספציפית.
+• 2–4 שורות מסכמות התאמה ישירה למשרה.
 
 # מיומנויות מפתח (ATS)
-• מיומנות/טכנולוגיה/תחום — רמת שליטה / שנות ניסיון
-• מיומנות…
+• מיומנות/טכנולוגיה — רמת שליטה / שנות ניסיון
+• …
 • …
 
 # ניסיון תעסוקתי
 תפקיד | חברה | עיר/היברידי | שנים (YYYY–YYYY)
-• הישג מדיד 1 (מספרים/אחוזים/מעטפת)
+• הישג מדיד 1 (%, מספרים, היקפים)
 • הישג מדיד 2
-• התאמה למילות מפתח מהמשרה: <מילים מרכזיות משולבות בטבעיות>
+• שילוב מילות מפתח רלוונטיות מהמשרה
 
 תפקיד | חברה | שנים
 • …
 
-# השכלה והכשרות
-• תואר/קורס | מוסד | שנים | תעודות (אם יש)
+# השכלה ותעודות
+• תואר/קורס | מוסד | שנים | תעודות
 
 # שפות
-• עברית — שוטפת | אנגלית — רמה X | שפות נוספות
+• עברית — רמה | אנגלית — רמה | נוספות
 
 # פרויקטים/התנדבות (אופציונלי)
-• שם פרויקט — 1–2 bullets המראים ערך ותוצאה
-`;
-  }
-  // English template
-  return `# Contact
-Full Name: <fill if missing from CV>
-Email: <...> | Phone: <...> | Location: <...> | Links: LinkedIn/GitHub
+• פרויקט — תוצאה/ערך ב-1–2 bullets
+`
+      : `# Contact
+Full Name: <leave empty if unknown>
+Email | Phone | Location | Links (LinkedIn/GitHub)
 
 # Professional Summary
-• 2–4 lines summarizing exact fit for this JD.
+• 2–4 lines showing direct fit to this JD.
 
 # Core Skills (ATS)
-• Skill/Tool/Domain — level / years
-• Skill…
+• Skill/Tool — level / years
+• …
 • …
 
 # Experience
 Role | Company | City/Hybrid | Years (YYYY–YYYY)
-• Measurable win 1 (%, numbers, scope)
-• Measurable win 2
-• JD keyword alignment: <natural keywords>
+• Measurable outcome 1 (%, numbers, scope)
+• Measurable outcome 2
+• JD keyword alignment
 
 Role | Company | Years
 • …
@@ -88,117 +115,101 @@ Role | Company | Years
 • Degree/Course | Institution | Years | Certificates
 
 # Languages
-• English — Level | Other — Level
+• English — level | Others — level
 
 # Projects/Volunteering (optional)
-• Project name — 1–2 bullets showing value/outcome
+• Project — 1–2 bullets with outcomes
 `;
-}
 
-function userPrompt({ job_description, cv_text, lang, target }) {
-  const he = lang === "he";
-  const focus =
-    target === "cv"
-      ? he
-        ? "התמקד בעיקר ב־tailored_cv, מכתב מקדים אופציונלי."
-        : "Focus on tailored_cv; cover letter optional."
-      : target === "cover"
-      ? he
-        ? "התמקד בעיקר ב־cover_letter, קורות-חיים אופציונליים."
-        : "Focus on cover_letter; tailored CV optional."
-      : he
-      ? "החזר גם וגם — cover_letter וגם tailored_cv."
-      : "Return both cover_letter and tailored_cv.";
-  const tpl = cvTemplate(lang);
-  return (
-    (he ? "מודעת דרושים:\n" : "Job description:\n") +
-    job_description +
-    "\n\n" +
-    (he ? "קורות חיים מקוריים:\n" : "Original CV:\n") +
-    cv_text +
-    "\n\n" +
-    (he
-      ? "הוראות:\n" +
-        "- בצע השוואת ATS והחזר ציונים 0..100.\n" +
-        "- כתוב מכתב מקדים תמציתי (עד ~180 מילים) עם התאמה ישירה למשרה.\n" +
-        "- בנה קורות-חיים לפי התבנית הבאה (חובה לשמור על מבנה הכותרות):\n"
-      : "Instructions:\n" +
-        "- Perform ATS-style matching and return scores 0..100.\n" +
-        "- Write a concise cover letter (~180 words) tailored to this JD.\n" +
-        "- Build a resume strictly following this template (keep headings):\n") +
-    tpl +
-    "\n" +
-    focus +
-    "\n" +
-    (he
-      ? "החזר JSON בלבד, ללא הסברים נוספים. שמות שדות בדיוק: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv."
-      : "Return JSON only, no extra prose. Field names exactly: match_score, keywords_match, requirements_match, experience_match, skills_match, cover_letter, tailored_cv.")
-  );
-}
+    // ---------- הנחיות למודל (User input) ----------
+    const focus =
+      target === "cv"
+        ? isHeb
+          ? "החזר בעיקר את השדה tailored_cv; מכתב מקדים אופציונלי בלבד."
+          : "Return mainly tailored_cv; cover_letter can be minimal."
+        : target === "cover"
+        ? isHeb
+          ? "החזר בעיקר את השדה cover_letter; קורות-חיים אופציונליים בלבד."
+          : "Return mainly cover_letter; tailored_cv can be minimal."
+        : isHeb
+        ? "החזר גם cover_letter וגם tailored_cv."
+        : "Return both cover_letter and tailored_cv.";
 
-async function callOpenAI(apiKey, model, messages) {
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: model || "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      temperature: 0.2,
-      messages,
-    }),
-  });
-  if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}`);
-  const j = await r.json();
-  const txt = j?.choices?.[0]?.message?.content || "{}";
-  return JSON.parse(txt);
-}
+    const INPUT = [
+      isHeb ? "מודעת דרושים:" : "Job description:",
+      job_description,
+      "",
+      isHeb ? "קורות חיים מקוריים:" : "Original CV:",
+      cv_text,
+      "",
+      isHeb
+        ? "הוראות:\n- בצע השוואת ATS והחזר ציונים 0..100 בשדות המתאימים.\n- כתוב מכתב מקדים תמציתי (~180 מילים) מותאם למשרה.\n- בנה קורות-חיים לפי התבנית הבאה (שמור על הכותרות):"
+        : "Instructions:\n- Perform ATS-style comparison and return 0..100 scores in the dedicated fields.\n- Write a concise cover letter (~180 words) tailored to this JD.\n- Build the resume exactly with the following template (keep headings):",
+      CV_TEMPLATE,
+      "",
+      focus,
+      "",
+      isHeb
+        ? "החזר JSON בלבד לפי הסכמה. אל תוסיף טקסט מחוץ ל-JSON."
+        : "Return JSON only per the schema. No prose outside the JSON.",
+    ].join("\n");
 
-export default async function handler(req) {
-  try {
-    if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405 });
-    }
-    const body = await req.json();
-    const { job_description, cv_text, target = "all", model_pref } = body || {};
-    const lang = pickLang(job_description, cv_text);
+    // ---------- קריאה ל-Responses API ----------
+    const r = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature,
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "AtsResult", strict: true, schema },
+        },
+        input: `${SYSTEM}\n\n${INPUT}`,
+        max_output_tokens: 3000,
+      }),
+    });
 
-    const sys = sysPrompt(lang);
-    const user = userPrompt({ job_description, cv_text, lang, target });
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "Missing OPENAI_API_KEY" }), { status: 500 });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = data?.error?.message || `OpenAI error (${r.status})`;
+      return res.status(400).json({ error: msg });
     }
 
-    const model =
-      model_pref === "gemini" || model_pref === "claude"
-        ? "gpt-4o-mini" // fallback if other providers chosen on UI
-        : "gpt-4o-mini";
+    // תחת response_format=json_schema נקבל JSON טהור בשדה output_text
+    const text =
+      data.output_text ??
+      (Array.isArray(data.content)
+        ? data.content.map((c) => c.text).join("\n")
+        : "") ??
+      "";
 
-    const data = await callOpenAI(apiKey, model, [
-      { role: "system", content: sys },
-      { role: "user", content: user },
-    ]);
+    // נרצה להחזיר אובייקט מוכן לקליינט (ולא רק מחרוזת)
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      // fallback בטוח במקרה קצה
+      payload = {
+        match_score: 0,
+        keywords_match: 0,
+        requirements_match: 0,
+        experience_match: 0,
+        skills_match: 0,
+        cover_letter: "",
+        tailored_cv: "",
+      };
+    }
 
-    // normalize & respect target
-    const out = {
-      match_score: Math.max(0, Math.min(100, Math.round(Number(data.match_score || data.match || 0)))),
-      keywords_match: Math.max(0, Math.min(100, Math.round(Number(data.keywords_match || data.keywords || 0)))),
-      requirements_match: Math.max(0, Math.min(100, Math.round(Number(data.requirements_match || data.requirements || 0)))),
-      experience_match: Math.max(0, Math.min(100, Math.round(Number(data.experience_match || data.experience || 0)))),
-      skills_match: Math.max(0, Math.min(100, Math.round(Number(data.skills_match || data.skills || 0)))),
-      cover_letter: String(data.cover_letter || ""),
-      tailored_cv: String(data.tailored_cv || ""),
-    };
+    // אם המשתמש ביקש מיקוד – נרוקן את השדה הלא נדרש כדי שה-UI לא יתבלבל
+    if (target === "cv") payload.cover_letter = "";
+    if (target === "cover") payload.tailored_cv = "";
 
-    if (target === "cv") out.cover_letter = ""; // return just CV
-    if (target === "cover") out.tailored_cv = ""; // return just Cover
-
-    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+    return res.status(200).json(payload);
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message || "error" }), { status: 500 });
+    return res.status(400).json({ error: e?.message || "OpenAI request failed" });
   }
 }
