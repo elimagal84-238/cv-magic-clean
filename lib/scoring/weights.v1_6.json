@@ -1,0 +1,7 @@
+{
+  "w_bm25f": 0.40,
+  "w_skills": 0.30,
+  "w_keywords": 0.15,
+  "w_experience": 0.12,
+  "w_quality": 0.03
+}
