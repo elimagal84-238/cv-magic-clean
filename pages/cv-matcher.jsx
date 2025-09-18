@@ -289,55 +289,43 @@ export default function CVMatcher(){
     if(which==="cv"&&cvHist.length>1){ const last=cvHist[cvHist.length-2]; setCV(last); setCvHist(h=>h.slice(0,-1)); toast.push("שוחזר טקסט קורות החיים","info"); }
   }
 
-// pages/cv-matcher.jsx — inside CVMatcher
+// בתוך CVMatcher — החלף את כל run()
 async function run(){
   setRunning(true);
   try{
-    // 1) קבל טקסטים+פלט מה-LLM (נשאר כפי שהיה אצלך)
-    const body = {
-      job_description: jd,
-      cv_text: cv,
-      role_preset: rolePreset,
-      slider,
-      run_index: runIdx,
-      model_pref: model,
-      target,
+    const body = { job_description: jd, cv_text: cv, role_preset: rolePreset, slider, run_index: runIdx, model_pref: model, target };
+    // 1) LLM: טקסטים + ציונים
+    const rL = await fetch("/api/openai-match",{ method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
+    const jL = await rL.json(); if(!rL.ok) throw new Error(jL?.error||"openai-match failed");
+
+    // 2) דטרמיניסטי: מדדים + ניתוח להסבר
+    const rD = await fetch("/api/score-match",{ method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ job_description: jd, cv_text: cv }) });
+    const jD = await rD.json(); if(!rD.ok) throw new Error(jD?.error||"score-match failed");
+
+    // 3) מיזוג ציונים (ברירת מחדל 70% LLM + 30% rules; ניתן לכוון)
+    const blend = (a,b)=>clamp100(0.7*Number(a||0) + 0.3*Number(b||0));
+    const nextScores = {
+      match:        blend(jL.match_score,        jD.match_score),
+      keywords:     blend(jL.keywords_match,     jD.keywords_match),
+      requirements: blend(jL.requirements_match, jD.requirements_match),
+      experience:   blend(jL.experience_match,   jD.experience_match),
+      skills:       blend(jL.skills_match,       jD.skills_match),
     };
-    const r1 = await fetch("/api/openai-match", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const j1 = await r1.json();
-    if(!r1.ok) throw new Error(j1?.error || "openai-match failed");
 
-    // 2) חשב מדדים אמיתיים (ללא LLM) — לא משפיע על איכות ה-Cover/CV
-    const r2 = await fetch("/api/score-match", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ job_description: jd, cv_text: cv }),
-    });
-    const j2 = await r2.json();
-    if(!r2.ok) throw new Error(j2?.error || "score-match failed");
-
-    // 3) הזנת UI
-    setScores({
-      match:        clamp100(j2.match_score),
-      keywords:     clamp100(j2.keywords_match),
-      requirements: clamp100(j2.requirements_match),
-      experience:   clamp100(j2.experience_match),
-      skills:       clamp100(j2.skills_match),
-    });
-    setCover(String(j1.cover_letter || ""));
-    setTailored(String(j1.tailored_cv || ""));
+    setScores(nextScores);
+    setCover(String(jL.cover_letter||""));
+    setTailored(String(jL.tailored_cv||""));
     setHasRun(true);
 
-    setRunIdx(x => { const n=(Number(x||0)+1)%99999; saveLS(LS.runIdx,n); return n; });
+    // שמור הסבר לצ'אט (מהדטרמיניסטי — שקוף)
+    setAnalysis(jD.analysis || null);
+
+    setRunIdx(x=>{ const n=(Number(x||0)+1)%99999; saveLS(LS.runIdx,n); return n; });
     toast.push("ההרצה הסתיימה בהצלחה", "success");
-  } catch(e){
+  }catch(e){
     console.error("run() error:", e);
-    toast.push("שגיאה בהרצה: " + (e?.message || "unknown"), "error", 5000);
-  } finally {
+    toast.push("שגיאה בהרצה: "+(e?.message||"unknown"), "error", 5000);
+  }finally{
     setRunning(false);
   }
 }
