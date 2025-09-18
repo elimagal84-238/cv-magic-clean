@@ -1,38 +1,33 @@
 // pages/api/openai-match.js
-// Node Next.js API Route
+// LLM-only version (no heuristic gauges). Returns scores + texts from the model.
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-  const {
-    job_description,
-    cv_text,
-    role_preset, // {min,max,step}
-    slider, // 1..9
-    run_index,
-    temperature, // computed client-side; re-check/fuse with server calc
-    model_pref, // "chatgpt" | "gemini" | "claude" (non-OpenAI fallbacks to ChatGPT)
-    target, // "all" | "cover" | "cv"
-  } = req.body || {};
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   try {
-    // ---------- sanity ----------
+    const {
+      job_description,
+      cv_text,
+      role_preset,   // { min, max, step }
+      slider,        // 1..9
+      run_index,
+      temperature,   // optional override
+      model_pref,    // "chatgpt" | "gemini" | "claude" (we use OpenAI here)
+      target,        // "all" | "cover" | "cv"
+    } = req.body || {};
+
+    // -------- sanitize / derive --------
     const jd = String(job_description || "").slice(0, 50_000);
     const cv = String(cv_text || "").slice(0, 50_000);
     const runIndex = Number(run_index || 0) || 0;
     const model = String(model_pref || "chatgpt");
 
-    // temperature: derive from slider + role preset, clamp 0..1
-    // slider: 1..9 (UI)
-    const s = Math.max(1, Math.min(9, Number(slider || 5)));
-    const p = rolePreset(role_preset);
-    const tFromSlider =
-      p.min + ((p.max - p.min) * (s - 1 + (runIndex % 3) * 0.15)) / 8;
-    const temp = clamp01(
-      0.5 * tFromSlider + 0.5 * clamp01(Number(temperature || tFromSlider))
-    );
+    const s = clampInt(Number(slider || 5), 1, 9);
+    const p = normalizeRolePreset(role_preset);
+    const tFromSlider = p.min + ((p.max - p.min) * (s - 1 + (runIndex % 3) * 0.15)) / 8;
+    const temp = clamp01(0.5 * tFromSlider + 0.5 * clamp01(Number(temperature ?? tFromSlider)));
 
-    // ---------- call LLM ----------
+    // -------- schema + prompts --------
     const schema = `
 {
   "type": "object",
@@ -47,156 +42,118 @@ export default async function handler(req, res) {
   },
   "required": ["match_score","keywords","requirements_coverage","experience","skills","tailored_cv","cover_letter"],
   "additionalProperties": false
-}
-`.trim();
+}`.trim();
 
     const system = `
-You are CV-Magic, an ATS-aware assistant. 
-Return ONLY JSON that strictly follows the provided schema.
-Scoring rules:
-- match_score is 0..100 and reflects overall fit.
-- keywords / requirements_coverage / experience / skills are 0..100.
-Produce concise but complete "tailored_cv" (markdown bullets ok) and "cover_letter" (short, targeted).
-Ensure terminology mirrors the job ad while staying truthful to the CV.
-  `.trim();
+You are CV-Magic, an ATS-aware assistant.
+Return ONLY JSON that strictly matches the schema.
+Each score is 0..100. Keep cover_letter concise and targeted; tailored_cv may use short bullets.
+Mirror JD terminology but stay truthful to the provided CV.`.trim();
 
-  const user = `
+    const user = `
 [JOB DESCRIPTION]
-${job_description}
+${jd}
 
 [CV]
-${cv_text}
+${cv}
 
 [SLIDERS]
 temperature=${temp.toFixed(2)} ; preset=${JSON.stringify(p)}
 target=${String(target || "all")}
-`.trim();
 
-    const llmJson = await callOpenAI(system, user, temp);
+[SCHEMA]
+${schema}
 
-    // ---------- parse & validate ----------
-    const obj = safeParse(llmJson);
+Return ONLY minified JSON conforming to the schema above.`.trim();
 
-    const out = {
-      match_score: clamp100(obj.match_score),
-      keywords_match: clamp100(obj.keywords),
+    // -------- LLM call --------
+    const llmContent = await callOpenAI(system, user, temp);
+    const obj = safeParse(llmContent);
+
+    // -------- response (field names expected by frontend) --------
+    return res.status(200).json({
+      match_score:        clamp100(obj.match_score),
+      keywords_match:     clamp100(obj.keywords),
       requirements_match: clamp100(obj.requirements_coverage),
-      experience_match: clamp100(obj.experience),
-      skills_match: clamp100(obj.skills),
-      tailored_cv: String(obj.tailored_cv || ""),
-      cover_letter: String(obj.cover_letter || ""),
-      temperature: temp,
-      model,
-    };
-
-    return res.status(200).json(out);
+      experience_match:   clamp100(obj.experience),
+      skills_match:       clamp100(obj.skills),
+      tailored_cv:        String(obj.tailored_cv || ""),
+      cover_letter:       String(obj.cover_letter || ""),
+      temperature:        temp,
+      model:              model,
+      run_index:          runIndex,
+      slider:             s,
+      role_preset:        p,
+      target:             String(target || "all"),
+    });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: e.message || "Server error" });
+    console.error("openai-match error:", e);
+    return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
 
-// ---------- utils ----------
-function rolePreset(rp) {
-  const fallback = { min: 0.2, max: 0.8, step: 0.1 };
-  if (!rp || typeof rp !== "object") return fallback;
-  const min = typeof rp.min === "number" ? rp.min : fallback.min;
-  const max = typeof rp.max === "number" ? rp.max : fallback.max;
-  const step = typeof rp.step === "number" ? rp.step : fallback.step;
+/* ===================== utils ===================== */
+function clamp01(x){ return Math.max(0, Math.min(1, Number(x || 0))); }
+function clamp100(x){ const n = Number(x); return Math.max(0, Math.min(100, Math.round(Number.isFinite(n) ? n : 0))); }
+function clampInt(x,a,b){ return Math.max(a, Math.min(b, Math.round(Number(x)||0))); }
+
+function normalizeRolePreset(rp){
+  const f = { min: 0.2, max: 0.8, step: 0.1 };
+  if (!rp || typeof rp !== "object") return f;
+  const min  = typeof rp.min  === "number" ? rp.min  : f.min;
+  const max  = typeof rp.max  === "number" ? rp.max  : f.max;
+  const step = typeof rp.step === "number" ? rp.step : f.step;
   return { min: clamp01(min), max: clamp01(max), step: clamp01(step) };
 }
-function clamp01(x) { return Math.max(0, Math.min(1, Number(x || 0))); }
-function clamp100(x) { return Math.max(0, Math.min(100, Math.round(Number(x || 0)))); }
 
-// ---------- OpenAI call (ChatGPT) ----------
-async function callOpenAI(system, user, temperature) {
+/* ---------- OpenAI call (Chat Completions) ---------- */
+async function callOpenAI(system, user, temperature){
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
 
   const messages = [
     { role: "system", content: system },
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text:
-            user +
-            `
-
-[SCHEMA]
-\`\`\`json
-{
-  "type": "object",
-  "properties": {
-    "match_score": { "type": "number", "minimum": 0, "maximum": 100 },
-    "keywords": { "type": "number", "minimum": 0, "maximum": 100 },
-    "requirements_coverage": { "type": "number", "minimum": 0, "maximum": 100 },
-    "experience": { "type": "number", "minimum": 0, "maximum": 100 },
-    "skills": { "type": "number", "minimum": 0, "maximum": 100 },
-    "tailored_cv": { "type": "string" },
-    "cover_letter": { "type": "string" }
-  },
-  "required": ["match_score","keywords","requirements_coverage","experience","skills","tailored_cv","cover_letter"],
-  "additionalProperties": false
-}
-\`\`\`
-Return ONLY minified JSON that conforms to this schema.
-`,
-        },
-      ],
-    },
+    { role: "user",   content: user   },
   ];
 
   const body = {
     model: "gpt-4o-mini",
     messages,
-    temperature: Math.max(0, Math.min(1, Number(temperature || 0.5))),
+    temperature: clamp01(temperature),
     response_format: { type: "json_object" },
   };
 
-  const content = await postJson("https://api.openai.com/v1/chat/completions", body, {
+  const json = await postJson("https://api.openai.com/v1/chat/completions", body, {
     Authorization: `Bearer ${apiKey}`,
   });
 
-  return content;
+  return json?.choices?.[0]?.message?.content || "{}";
 }
 
-async function postJson(url, body, headers = {}) {
+async function postJson(url, body, headers = {}){
   const resp = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) {
+  if (!resp.ok){
     const t = await resp.text();
     throw new Error(`OpenAI error ${resp.status}: ${t}`);
   }
-  const j = await resp.json();
-  const content = j?.choices?.[0]?.message?.content || "{}";
-  return content;
+  return resp.json();
 }
 
-  function safeParse(jsonStr) {
-    try {
-      return JSON.parse(jsonStr);
-    } catch {
-      // naive repair: find first/last braces
-      const i = jsonStr.indexOf("{");
-      const k = jsonStr.lastIndexOf("}");
-      if (i >= 0 && k > i) {
-        try {
-          return JSON.parse(jsonStr.slice(i, k + 1));
-        } catch {}
-      }
-      return {
-        match_score: 0,
-        keywords: 0,
-        requirements_coverage: 0,
-        experience: 0,
-        skills: 0,
-        tailored_cv: "",
-        cover_letter: "",
-      };
+function safeParse(s){
+  try{
+    return JSON.parse(s);
+  }catch{
+    const i = s.indexOf("{"), k = s.lastIndexOf("}");
+    if (i >= 0 && k > i){
+      try{ return JSON.parse(s.slice(i, k+1)); }catch{}
     }
+    return {
+      match_score: 0, keywords: 0, requirements_coverage: 0, experience: 0, skills: 0,
+      tailored_cv: "", cover_letter: ""
+    };
   }
+}
