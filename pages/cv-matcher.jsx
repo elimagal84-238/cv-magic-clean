@@ -273,19 +273,76 @@ export default function CVMatcher(){
     if(which==="cv"&&cvHist.length>1){ const last=cvHist[cvHist.length-2]; setCV(last); setCvHist(h=>h.slice(0,-1)); toast.push("שוחזר טקסט קורות החיים","info"); }
   }
 
-  async function run(){
-    setRunning(true);
-    try{
-      const body={job_description:jd, cv_text:cv, role_preset:rolePreset, slider, run_index:runIdx, model_pref:model, target};
-      const resp=await fetch("/api/openai-match",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
-      if(!resp.ok) throw new Error(await resp.text());
-      const j=await resp.json();
-      setScores({match:clamp100(j.match_score), keywords:clamp100(j.keywords_match), requirements:clamp100(j.requirements_match), experience:clamp100(j.experience_match), skills:clamp100(j.skills_match)});
-      setCover(String(j.cover_letter||"")); setTailored(String(j.tailored_cv||"")); setHasRun(true);
-      setRunIdx(x=>{const n=(Number(x||0)+1)%99999; saveLS(LS.runIdx,n); return n;});
-      toast.push("ההרצה הסתיימה בהצלחה","success");
-    }catch(e){ toast.push("שגיאה בהרצה: "+(e?.message||"unknown"),"error",5000); } finally{ setRunning(false); }
+  // REPLACE old run() with this version
+async function run(){
+  setRunning(true);
+  try{
+    const body = {
+      job_description: jd,
+      cv_text: cv,
+      role_preset: rolePreset,
+      slider,
+      run_index: runIdx,
+      model_pref: model,
+      target,
+    };
+
+    const resp = await fetch("/api/openai-match", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let j;
+    try { j = await resp.json(); } catch { j = null; }
+    if(!resp.ok) throw new Error((j && j.error) || `HTTP ${resp.status}`);
+
+    // --- tolerant parsing helpers ---
+    const parseNum = (v) => {
+      if (v == null) return 0;
+      if (typeof v === "object" && "value" in v) v = v.value;
+      const n = typeof v === "string"
+        ? parseFloat(String(v).replace(/[^\d.-]/g, ""))
+        : Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const get = (obj, ...keys) => {
+      for (const k of keys) {
+        const val = k.split(".").reduce((o, kk) => (o && o[kk] != null ? o[kk] : undefined), obj);
+        if (val != null) return val;
+      }
+      return 0;
+    };
+
+    const nextScores = {
+      match:        clamp100(parseNum(get(j, "match_score", "match", "scores.match"))),
+      keywords:     clamp100(parseNum(get(j, "keywords_match", "keywords", "scores.keywords"))),
+      requirements: clamp100(parseNum(get(j, "requirements_match", "requirements", "scores.requirements"))),
+      experience:   clamp100(parseNum(get(j, "experience_match", "experience", "scores.experience"))),
+      skills:       clamp100(parseNum(get(j, "skills_match", "skills", "scores.skills"))),
+    };
+
+    console.log("[/api/openai-match] raw:", j, "parsedScores:", nextScores);
+
+    setScores(nextScores);
+    setCover(String(j?.cover_letter ?? ""));
+    setTailored(String(j?.tailored_cv ?? ""));
+    setHasRun(true);
+
+    setRunIdx(x => {
+      const n = (Number(x || 0) + 1) % 99999;
+      saveLS(LS.runIdx, n);
+      return n;
+    });
+
+    toast.push("ההרצה הסתיימה בהצלחה", "success");
+  } catch(e){
+    console.error("run() error:", e);
+    toast.push("שגיאה בהרצה: " + (e?.message || "unknown"), "error", 5000);
+  } finally {
+    setRunning(false);
   }
+}
+
 
   const applyCover=(text)=>setCover(t=>`${t}\n\n---\nAssistant suggestions:\n${text}`);
   const applyCV=(text)=>setTailored(t=>`${t}\n\n---\nAssistant suggestions:\n${text}`);
