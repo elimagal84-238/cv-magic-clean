@@ -72,7 +72,8 @@ const LoadingOverlay=({show,label="Working…"})=>!show?null:(
 function RingGauge({label,value=0,size=150,stroke=14,loading}){
   if(loading) return <Skeleton className="h-[150px] w-[150px]"/>;
   const r=(size-stroke)/2, c=2*Math.PI*r;
-  const pct=Math.max(0,Math.min(100,Number(value||0)));
+  const n = Number(value);
+const pct = Math.max(0, Math.min(100, Number.isFinite(n) ? n : 0));
   const dash=(pct/100)*c, color=scoreColor(pct);
   return (
     <div className="relative inline-flex items-center justify-center" style={{width:size,height:size}}>
