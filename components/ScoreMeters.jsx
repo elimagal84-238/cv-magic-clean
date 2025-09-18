@@ -1,70 +1,36 @@
 // components/ScoreMeters.jsx
 import React from "react";
 
-/**
- * Gauge עגול פשוט עבור ערכים 0..100
- */
-function Gauge({ label, value = 0 }) {
-  const v = Math.max(0, Math.min(100, Number(value) || 0));
-  const radius = 42;
-  const circumference = 2 * Math.PI * radius;
-  const dash = (v / 100) * circumference;
-
+function Meter({ label, value }) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
   return (
-    <div className="flex flex-col items-center justify-center">
-      <svg viewBox="0 0 120 120" className="w-28 h-28">
-        <circle
-          cx="60"
-          cy="60"
-          r={radius}
-          stroke="#eee"
-          strokeWidth="12"
-          fill="none"
-        />
-        <circle
-          cx="60"
-          cy="60"
-          r={radius}
-          stroke="#22c55e"
-          strokeWidth="12"
-          fill="none"
-          strokeLinecap="round"
-          strokeDasharray={`${dash} ${circumference - dash}`}
-          transform="rotate(-90 60 60)"
-        />
-        <text
-          x="60"
-          y="64"
-          textAnchor="middle"
-          fontSize="22"
-          fontWeight="700"
-          fill="#ef4444"
-        >
-          {v}%
-        </text>
-      </svg>
-      <div className="mt-1 text-sm font-medium text-gray-700">{label}</div>
+    <div className="flex flex-col items-center gap-2 w-full">
+      <div
+        className="w-24 h-24 sm:w-28 sm:h-28 rounded-full grid place-items-center text-sm sm:text-base"
+        style={{
+          background: `conic-gradient(#16a34a ${pct * 3.6}deg, #e5e7eb 0deg)`,
+        }}
+      >
+        <div className="w-20 h-20 sm:w-24 sm:h-24 bg-white rounded-full grid place-items-center border border-gray-200">
+          <span className="font-semibold">{pct}%</span>
+        </div>
+      </div>
+      <div className="text-center text-xs sm:text-sm text-gray-700">{label}</div>
     </div>
   );
 }
 
-/**
- * קומפוננטת המטרים – מקבלת 4 ערכים (0..100)
- */
-export default function ScoreMeters({
-  keywords = 0,
-  requirements = 0,
-  match = 0,
-  experience = 0,
-  skills = 0,
-}) {
+export default function ScoreMeters({ breakdown = {}, total = 0 }) {
+  const items = [
+    { key: "match_score", label: "Total" , val: total },
+    { key: "skills_match", label: "Skills", val: breakdown.skills_match },
+    { key: "experience_match", label: "Experience", val: breakdown.experience_match },
+  ];
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mt-4">
-      <Gauge label="Keywords" value={keywords} />
-      <Gauge label="Requirements" value={requirements} />
-      <Gauge label="Match" value={match} />
-      <Gauge label="Experience" value={experience} />
-      <Gauge label="Skills" value={skills} />
+    <div className="grid grid-cols-3 gap-3 sm:gap-6 w-full">
+      {items.map((it) => (
+        <Meter key={it.key} label={it.label} value={it.val} />
+      ))}
     </div>
   );
 }
