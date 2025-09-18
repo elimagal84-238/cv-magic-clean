@@ -328,7 +328,12 @@ async function run(){
   }finally{
     setRunning(false);
   }
-}
+const applyCover = (text) =>
+  setCover((t) => `${t}\n\n---\nAssistant suggestions:\n${text}`);
+
+const applyCV = (text) =>
+  setTailored((t) => `${t}\n\n---\nAssistant suggestions:\n${text}`);
+
 
     // ---------- helpers ----------
     const parseNum = (v) => {
