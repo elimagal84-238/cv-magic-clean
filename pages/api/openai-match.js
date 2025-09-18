@@ -164,10 +164,13 @@ Role | Company | Years
       body: JSON.stringify({
         model,
         temperature,
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "AtsResult", strict: true, schema },
-        },
+        text: {
+  format: {
+    type: "json_schema",
+    json_schema: { name: "AtsResult", strict: true, schema },
+  },
+},
+
         input: `${SYSTEM}\n\n${INPUT}`,
         max_output_tokens: 3000,
       }),
