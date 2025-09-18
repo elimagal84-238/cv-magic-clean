@@ -73,24 +73,40 @@ const LoadingOverlay=({show,label="Working…"})=>!show?null:(
 );
 
 /* ---------- ring gauge ---------- */
-const raw = typeof value === "string" ? parseFloat(String(value).replace(/[^\d.-]/g, "")) : Number(value);
-const pct  = Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 0));
-function RingGauge({label,value=0,size=150,stroke=14,loading}){
-  if(loading) return <Skeleton className="h-[150px] w-[150px]"/>;
-  const r=(size-stroke)/2, c=2*Math.PI*r;
-  const n = Number(value);
-const pct = Math.max(0, Math.min(100, Number.isFinite(n) ? n : 0));
-  const dash=(pct/100)*c, color=scoreColor(pct);
+function RingGauge({ label, value = 0, size = 150, stroke = 14, loading }) {
+  if (loading) return <Skeleton className="h-[150px] w-[150px]" />;
+  // parsing that never throws/NaN
+  const raw =
+    typeof value === "string"
+      ? parseFloat(String(value).replace(/[^\d.-]/g, ""))
+      : Number(value);
+  const pct = Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 0));
+
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = (pct / 100) * c;
+  const color = scoreColor(pct);
+
   return (
-    <div className="relative inline-flex items-center justify-center" style={{width:size,height:size}}>
+    <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size/2} cy={size/2} r={r} stroke="#eee" strokeWidth={stroke} fill="none"/>
-        <circle cx={size/2} cy={size/2} r={r} stroke="currentColor" strokeWidth={stroke} fill="none"
-          className={color} strokeDasharray={`${dash} ${c-dash}`} transform={`rotate(-90 ${size/2} ${size/2})`} strokeLinecap="round"/>
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="#eee" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="currentColor"
+          strokeWidth={stroke}
+          fill="none"
+          className={color}
+          strokeDasharray={`${dash} ${c - dash}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          strokeLinecap="round"
+        />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <div className="font-semibold text-sm">{label}</div>
-        <div className={cn("text-xl font-semibold",color)}>{pct}%</div>
+        <div className={cn("text-xl font-semibold", color)}>{pct}%</div>
       </div>
     </div>
   );
